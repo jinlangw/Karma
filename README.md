@@ -67,6 +67,12 @@ That is the next direction for KARMA:
 - `kubectl` on your `PATH`, pointing at a reachable cluster (a local [kind](https://kind.sigs.k8s.io/) cluster works)
 - a kubeconfig at `~/.kube/config` (or set `KUBECONFIG`)
 
+Some case setup scripts use `envsubst` (from GNU gettext) to fill in parameterized Kubernetes manifests. Install it before running those cases:
+
+- macOS: `brew install gettext`; if `envsubst` is not on your `PATH`, run `export PATH="$(brew --prefix gettext)/bin:$PATH"`.
+- Debian/Ubuntu: `sudo apt-get install gettext-base`.
+- Fedora: `sudo dnf install gettext-envsubst`.
+
 ### Install and launch the web UI
 
 ```bash
