@@ -7,6 +7,9 @@ metadata:
   label: 'CockroachDB full secure lifecycle: TLS bring-up through cert rotation'
 spec:
   prompt_mode: progressive
+  debug:
+    namespace_overrides:
+      default: cockroachdb
   stages:
   - id: stage_01
     service: cockroachdb

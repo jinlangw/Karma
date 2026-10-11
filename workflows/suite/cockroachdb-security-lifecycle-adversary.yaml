@@ -7,6 +7,12 @@ metadata:
   label: 'CockroachDB security lifecycle: TLS enable then cert rotation — with adversary injection'
 spec:
   prompt_mode: progressive
+  # Used only with `run-workflow ... --debug`; regular runs still get isolated
+  # Karma-managed namespaces. Here the rotation case's default role must point
+  # at the literal namespace used by the preceding CockroachDB cases.
+  debug:
+    namespace_overrides:
+      default: cockroachdb
   adversary:
   - scenario: delete_cert_secret
     inject_at_stage: stage_04
