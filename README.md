@@ -122,6 +122,24 @@ List the available agents:
 python3 orchestrator.py info --agents
 ```
 
+For a local debug run that should reuse a specific namespace, a workflow can
+declare a debug-only alias mapping:
+
+```yaml
+spec:
+  debug:
+    namespace_overrides:
+      default: cockroachdb
+```
+
+Activate it with `python3 orchestrator.py run-workflow <workflow.yaml> --debug`.
+The mapping key is a workflow namespace alias (for example, `default`), and the
+value is the Kubernetes namespace name. Without `--debug`, KARMA continues to
+use its normal per-run namespaces. KARMA does not role-label or role-delete the
+overridden namespace; however, the case's own setup commands still run and may
+modify or recreate resources there, so use it with a cluster/namespace intended
+for testing.
+
 ### Run the tests
 
 ```bash

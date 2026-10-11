@@ -122,6 +122,38 @@ class TestNormalizeWorkflow:
         assert len(result["stages"]) == 1
         assert result["adversary"] == []
 
+    def test_preserves_debug_namespace_overrides(self, tmp_path):
+        raw = {
+            "metadata": {"id": "debug-wf"},
+            "spec": {
+                "debug": {"namespace_overrides": {"default": "cockroachdb"}},
+                "stages": [
+                    {"id": "stage_1", "service": "svc", "case": "my-case"}
+                ],
+            },
+        }
+
+        result = normalize_workflow(raw, resources_dir=tmp_path)
+
+        assert result["debug"]["namespace_overrides"] == {
+            "default": "cockroachdb"
+        }
+
+    @pytest.mark.parametrize("namespace", ["CockroachDB", "bad_name", "-bad", "a" * 64])
+    def test_rejects_invalid_debug_namespace_override(self, tmp_path, namespace):
+        raw = {
+            "metadata": {"id": "debug-wf"},
+            "spec": {
+                "debug": {"namespace_overrides": {"default": namespace}},
+                "stages": [
+                    {"id": "stage_1", "service": "svc", "case": "my-case"}
+                ],
+            },
+        }
+
+        with pytest.raises(ValueError, match="workflow schema validation failed"):
+            normalize_workflow(raw, resources_dir=tmp_path)
+
 
 class TestSingleCaseToWorkflow:
     def test_produces_single_stage(self):

@@ -537,6 +537,26 @@ def _apply_namespace_binding(
     return bound
 
 
+def _bind_namespace_identities(
+    environment: Any,
+    roles: list[str],
+    run_id: str,
+    namespace_overrides: dict[str, str] | None = None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Return generated identities and their effective stage bindings.
+
+    The generated mapping stays unchanged for teardown. The effective mapping
+    overlays any debug overrides and is used to route commands and manifests.
+    """
+    overrides = namespace_overrides or {}
+    generated_bindings = dict(environment.bind_namespace_roles(roles, run_id))
+    active_overrides = {
+        role: overrides[role] for role in roles if role in overrides
+    }
+    effective_bindings = {**generated_bindings, **active_overrides}
+    return generated_bindings, effective_bindings
+
+
 def _wait_for_submit(
     submit_path: Path,
     *,
@@ -651,6 +671,7 @@ def run_stage(
     system_prompt: str | None = None,
     stage_index: int = 0,
     prologue: str = "",
+    namespace_overrides: dict[str, str] | None = None,
     defer_cleanup: bool = False,
     created_sink: set[str] | None = None,
     sandbox_options: dict[str, Any] | None = None,
@@ -681,6 +702,9 @@ def run_stage(
         stage's slot (``stage_index``) is re-rendered here with runtime env;
         the rest are used as-is. Concat modes span the whole list (future
         stages included).
+    namespace_overrides:
+        Optional debug-only mapping from workflow namespace identities to
+        borrowed physical Kubernetes namespaces.
     prompt_mode:
         One of the prompt modes defined in ``definitions.prompts``.
     defer_cleanup:
@@ -712,6 +736,7 @@ def run_stage(
     proxy_handle = None
     agent_process = None
     role_bindings: dict[str, str] = {}
+    generated_identity_bindings: dict[str, str] = {}
     identity_bindings: dict[str, str] = {}
     ns_baseline: set[str] = set()
     # Namespaces THIS run creates during setup (preconditions/decoys/adversary),
@@ -745,20 +770,28 @@ def run_stage(
             bind_host="0.0.0.0" if sandbox_mode == "docker" else "127.0.0.1",
         )
 
-        # Step 2: bind namespace roles. namespace_roles are the physical
-        # namespace *identities* we create and tear down; an optional
-        # namespace_binding maps the case's logical roles (source/target/...)
-        # onto those identities (how a migration alternates direction across
-        # stages). The mapped role_bindings drive env vars, commands, and
-        # manifests; the identities drive create/cleanup.
+        # Step 2: bind namespace roles. The generated bindings are retained for
+        # cleanup; a debug override changes the effective namespace used by
+        # commands and manifests without changing those cleanup names. An
+        # optional namespace_binding maps the case's logical roles
+        # (source/target/...) onto those identities (how a migration alternates
+        # direction across stages).
         # An explicit empty list means "no roles" (literal-namespace cases) and
         # must be respected -- `or ["default"]` would re-bind a default and set
         # BENCH_NAMESPACE, breaking those cases' oracles. Only None -> default.
         ns_roles = row.get("namespace_roles")
         if ns_roles is None:
             ns_roles = ["default"]
-        identity_bindings = environment.bind_namespace_roles(ns_roles, run_dir.name)
-        environment.ensure_namespaces(identity_bindings, run_dir=stage_dir)
+        generated_identity_bindings, identity_bindings = _bind_namespace_identities(
+            environment, ns_roles, run_dir.name, namespace_overrides
+        )
+        override_roles = set(namespace_overrides or {})
+        namespaces_to_ensure = {
+            role: namespace
+            for role, namespace in generated_identity_bindings.items()
+            if role not in override_roles
+        }
+        environment.ensure_namespaces(namespaces_to_ensure, run_dir=stage_dir)
         role_bindings = _apply_namespace_binding(
             identity_bindings, row.get("namespace_binding")
         )
@@ -1112,11 +1145,14 @@ def run_stage(
             cleanup_agent(agent_process)
         if proxy_handle is not None:
             proxy_handle.teardown()
-        if not defer_cleanup and identity_bindings and environment is not None:
+        if not defer_cleanup and generated_identity_bindings and environment is not None:
             try:
                 # Tear down the physical identity namespaces (role_bindings may
-                # alias several roles onto the same identity).
-                environment.cleanup_namespaces(identity_bindings, run_dir=stage_dir)
+                # alias several roles onto the same identity). This is the
+                # original generated map, never the debug-overridden bindings.
+                environment.cleanup_namespaces(
+                    generated_identity_bindings, run_dir=stage_dir
+                )
             except Exception as exc:
                 warn(f"failed to delete stage namespaces: {exc}")
         # Hand the recorded created-set back to a deferring caller (the workflow

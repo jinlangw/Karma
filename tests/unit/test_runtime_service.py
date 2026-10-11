@@ -59,3 +59,49 @@ class TestConfigPersistsPromptMode:
         assert cfg["stage_failure_mode"] == "continue"
         assert cfg["final_sweep_mode"] == "full"
         assert cfg["stages"][0]["agent_timeout_sec"] == 300
+
+    def test_cli_config_records_debug_namespace_overrides(self, tmp_path):
+        wf = {"id": "wf-debug", "stages": []}
+        overrides = {"default": "cockroachdb"}
+        with patch.object(service, "resolve_workflow_rows",
+                          side_effect=RuntimeError("stop after config")):
+            result = service.run_workflow(
+                wf, runs_dir=tmp_path, resources_dir=tmp_path,
+                namespace_overrides=overrides, run_id="debug-run",
+            )
+
+        assert result["status"] == "error"
+        cfg = json.loads((tmp_path / "debug-run" / "config.json").read_text())
+        assert cfg["debug_namespace_overrides"] == overrides
+
+    def test_rejects_debug_override_for_unknown_workflow_role(self, tmp_path):
+        wf = {"id": "wf-debug", "stages": []}
+        with patch.object(service, "resolve_workflow_rows", return_value=[
+            {"namespace_roles": ["default"]}
+        ]):
+            result = service.run_workflow(
+                wf, runs_dir=tmp_path, resources_dir=tmp_path,
+                namespace_overrides={"typo": "cockroachdb"}, run_id="bad-debug-run",
+            )
+
+        assert result["status"] == "error"
+        assert "unknown workflow namespace role" in result["error"]
+
+    def test_accepts_default_override_when_row_uses_implicit_default(self, tmp_path):
+        wf = {"id": "wf-debug", "stages": []}
+        with patch.object(service, "resolve_workflow_rows", return_value=[
+            {"namespace_roles": None}
+        ]), patch.object(service, "get_environment"), patch.object(
+            service, "resolve_agent", return_value={}
+        ), patch.object(
+            service, "run_workflow_loop", return_value={"status": "complete", "stages": []}
+        ) as run_loop:
+            result = service.run_workflow(
+                wf, runs_dir=tmp_path, resources_dir=tmp_path,
+                namespace_overrides={"default": "cockroachdb"}, run_id="implicit-default",
+            )
+
+        assert result["status"] == "complete"
+        assert run_loop.call_args.kwargs["namespace_overrides"] == {
+            "default": "cockroachdb"
+        }
