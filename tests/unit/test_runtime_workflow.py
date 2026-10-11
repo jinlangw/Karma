@@ -178,6 +178,43 @@ class TestRunWorkflowLoop:
             {"default": "ns-x"}, run_dir=tmp_path
         )
 
+    def test_debug_override_routes_stages_but_cleans_generated_namespace(self, tmp_path):
+        row = self._make_row("stage_1")
+        pass_result = {
+            "stage_id": "stage_1", "status": "pass", "oracle_verdict": "pass",
+            "submitted": True, "duration_sec": 0.1, "error": None,
+            "evidence_path": "", "oracle_path": "",
+        }
+        env = MagicMock()
+        env.bind_namespace_roles.return_value = {"default": "karma-run"}
+        env.build_namespace_env_vars.return_value = {"BENCH_NAMESPACE": "cockroachdb"}
+        env.list_namespaces.return_value = set()
+
+        def fake_run_stage(_row, **kwargs):
+            return pass_result
+
+        with patch("karma.runtime.workflow.run_stage", side_effect=fake_run_stage) as run_stage:
+            run_workflow_loop(
+                [row], run_id="r1", run_dir=tmp_path, resources_dir=tmp_path,
+                agent_meta={}, sandbox_mode="local", environment=env,
+                prompt_mode="progressive",
+                namespace_overrides={"default": "cockroachdb"},
+                final_sweep_mode="off",
+            )
+
+        assert run_stage.call_args.kwargs["namespace_overrides"] == {
+            "default": "cockroachdb"
+        }
+        env.build_namespace_env_vars.assert_called_once_with(
+            {"default": "cockroachdb"}
+        )
+        env.cleanup_namespaces.assert_called_once_with(
+            {"default": "karma-run"}, run_dir=tmp_path
+        )
+        env.cleanup_created_namespaces.assert_called_once_with(
+            set(), run_dir=tmp_path
+        )
+
     def test_retry_on_error_status(self, tmp_path):
         row = {**self._make_row("stage_1"), "retries": 1}
         error_result = {"stage_id": "stage_1", "status": "error",
