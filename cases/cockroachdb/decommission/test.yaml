@@ -1,54 +1,32 @@
 # cockroachdb/decommission
-# Safely reduce a 5-node CockroachDB cluster to 3 nodes using the decommission process
+# Safely reduce the selected cluster using CockroachDB membership removal.
 
 prompt: |
-  A 5-node CockroachDB cluster is running in namespace cockroachdb.
-
-  OBSERVED STATE:
-  - 5 nodes are live.
-  - A critical table ({{params.seed_table_name}}) is seeded with data, replicated across the cluster (replication factor 3).
-
-  YOUR TASK:
-  Safely reduce the cluster to 3 nodes without losing data or availability.
-
-  CONSTRAINTS:
-  - Do not delete or recreate the cluster.
-  - Keep {{params.seed_table_name}} readable throughout.
-  - Use CockroachDB's decommission process for nodes being removed.
-
-  GOAL:
-  - StatefulSet scaled to 3 replicas.
-  - Removed nodes fully decommissioned.
-  - Cluster remains SQL-ready.
-
-  Useful commands:
-  ```bash
-  kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node status --insecure
-  kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node decommission <id> --insecure
-  kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e "SELECT count(*) FROM {{params.seed_table_name}};"
-  ```
-
-  Verification:
-  1. Verify 3 nodes in cluster:
-     kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach node status --insecure
-     (Should show 3 live nodes)
-
-  2. Check StatefulSet replicas:
-     kubectl -n cockroachdb get sts crdb-cluster
-     (Should show 3/3 ready)
-
-  3. Verify data still available:
-     kubectl -n cockroachdb exec crdb-cluster-0 -- \
-       ./cockroach sql --insecure -e "SELECT count(*) FROM {{params.seed_table_name}};"
-     (Should return the seeded rows)
+  Safely reduce CockroachDB StatefulSet {{params.cluster_name}} in namespace
+  ${BENCH_NAMESPACE} from {{params.source_nodes}} nodes to
+  {{params.target_nodes}} nodes using CockroachDB's decommission process.
+  Remove the highest pod ordinals and retain the surviving nodes. Do not delete
+  or recreate the cluster. Preserve all data in {{params.seed_table_name}},
+  keep it readable throughout, and preserve the cluster's TLS or insecure mode.
+  Submit when the removed nodes are fully decommissioned, the StatefulSet has
+  {{params.target_nodes}} replicas, and the surviving cluster is SQL-ready.
 
 params:
+  cluster_name:
+    default: crdb-cluster
+    description: CockroachDB StatefulSet name identifying the target cluster
+  source_nodes:
+    default: 5
+    description: Prepared starting node count; must be greater than target_nodes
+  target_nodes:
+    default: 3
+    description: Final node count; at least 1. Preparation uses RF=3 for targets >=3, otherwise RF=1
   seed_table_name:
     default: bench.decom_data
-    description: Fully-qualified table seeded with data that must survive the decommission
+    description: Fully-qualified database.table fixture whose existing rows must survive
 
 namespace_contract:
-  required_roles: []
+  required_roles: [default]
 
 metrics:
   - time_to_first_mutation
@@ -59,93 +37,63 @@ metrics:
   - residual_drift
 
 preconditionUnits:
+  # Framework owns the namespace. Recover only the selected cluster, not other
+  # workloads. Detect security mode by a real SQL connection, not file presence.
   - name: crdb_env_ready
     on_probe_fail: skip
     probe:
-      # Non-destructive skip-if-running probe. The env PERSISTS across workflow
-      # stages: when a cockroachdb cluster is already present (inherited from a
-      # prior stage), skip the destructive apply so accumulated state is
-      # preserved. The apply (which deletes+recreates the namespace) runs ONLY on
-      # an empty namespace. NOTE: this case needs a seeded 5-node cluster; if it
-      # is chained after a stage that leaves a 3-node (or unseeded) cluster it
-      # cannot decommission down to 3 — that is a workflow-ordering concern to be
-      # curated separately, NOT something to fix by redeploying and wiping the
-      # inherited state.
-      # AUTHORITATIVE skip-if-running probe (Pattern 7): succeed when the
-      # canonical StatefulSet exists OR any cockroach pod is Running, so the
-      # destructive namespace rebuild below is skipped on an inherited cluster
-      # even if its pods are momentarily not Running (mid-restart from a prior
-      # stage) -- the StatefulSet persists across that window. The bare
-      # `grep -c Running` could miss such a cluster and clobber inherited state.
-      - command: "/bin/sh -c 'kubectl -n cockroachdb get statefulset crdb-cluster >/dev/null 2>&1 || kubectl -n cockroachdb get pods 2>/dev/null | grep -q Running'"
-        timeout_sec: 10
+      - command: "python3 cases/cockroachdb/decommission/scripts/prepare.py ready probe"
+        timeout_sec: 150
     apply:
-      - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/cockroachdb --timeout=400s || true'"
-        timeout_sec: 460
-        sleep: 2
-      - command: "kubectl create namespace cockroachdb"
-        sleep: 1
-      - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/decommission/resource/rbac.yaml"
-        sleep: 2
-      - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/decommission/resource/services.yaml"
-        sleep: 2
-      - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/decommission/resource/statefulset.yaml"
-        sleep: 5
-      - command: "/bin/sh -c 'for i in $(seq 1 30); do count=$(kubectl -n cockroachdb get pod -l app.kubernetes.io/name=cockroachdb --no-headers 2>/dev/null | wc -l | tr -d \" \"); if [ \"${count}\" -ge 1 ]; then exit 0; fi; sleep 2; done; exit 1'"
-        sleep: 1
-      - command: "kubectl -n cockroachdb wait --for=jsonpath={.status.phase}=Running pod -l app.kubernetes.io/name=cockroachdb --timeout=300s"
-        timeout_sec: 600
-        sleep: 5
-      - command: "/bin/sh -c 'for i in $(seq 1 30); do kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach init --insecure --host=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local && exit 0; sleep 3; done; exit 1'"
-        timeout_sec: 600
-        sleep: 2
-      - command: "kubectl -n cockroachdb rollout status statefulset/crdb-cluster --timeout=600s"
-        timeout_sec: 600
-        sleep: 5
-      # Seed + replica relocation can take several minutes of asynchronous
-      # upreplication on a fresh 5-node cluster (§1.8). The default per-command
-      # timeout (120s) can fire while the cluster is still healthily
-      # upreplicating -- the data WAS seeded, but the unit times out and the
-      # agent never runs. Budget the worst (loaded) case: the script's internal
-      # retry/wait budget is ~600s wall-clock plus per-exec latency, so this
-      # window must exceed it (P14: keep the inner budget strictly UNDER the
-      # unit timeout). 900s leaves margin; with 2Gi/node the cluster upreplicates
-      # fast and the script exits in well under 200s on the success path.
-      - command: "python3 -u cases/cockroachdb/decommission/scripts/seed_data.py"
-        timeout_sec: 900
-        sleep: 2
+      - command: "python3 -u cases/cockroachdb/decommission/scripts/prepare.py ready apply"
+        timeout_sec: 1800
     verify:
-      - command: "/bin/sh -c 'flag=--insecure; kubectl -n cockroachdb exec crdb-cluster-0 -- ls /cockroach/cockroach-certs/ca.crt >/dev/null 2>&1 && flag=--certs-dir=/cockroach/cockroach-certs; kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql $flag -e \"SELECT 1;\" 2>/dev/null'"
-        timeout_sec: 15
+      - command: "python3 cases/cockroachdb/decommission/scripts/prepare.py ready verify"
+        timeout_sec: 90
 
-  # Additive seed fixture (composition safety): the oracle requires the
-  # bench.decom_data table to remain readable with >= 3 rows (it runs
-  # SELECT count(*) FROM bench.decom_data). crdb_env_ready seeds it (via
-  # scripts/seed_data.py) on its destructive fresh-build path, which is SKIPPED on
-  # an inherited cluster (the probe sees pods Running), so the table is absent and
-  # the oracle fails. Re-establish JUST the table + its 3 rows additively when
-  # missing. Unlike seed_data.py this does NOT do replica relocation/pinning (that
-  # needs the 5-node topology the standalone build creates; on an inherited
-  # smaller cluster RELOCATE would error) -- the oracle's replica/decommission
-  # checks adapt to the live topology, only the row-readability check needs the
-  # table. Mode-aware (secure vs insecure) like the oracle. Never deletes the
-  # namespace or touches the cluster. Standalone the table already exists so the
-  # probe matches and this unit skips -> byte-identical standalone behaviour.
+  # Add missing fixture rows without overwriting inherited rows. Normalize
+  # replication counts across user/system zones, preserving other zone fields.
   - name: crdb_decom_seed
     on_probe_fail: skip
     probe:
-      - command: "/bin/sh -c 'flag=--insecure; kubectl -n cockroachdb exec crdb-cluster-0 -- ls /cockroach/cockroach-certs/ca.crt >/dev/null 2>&1 && flag=--certs-dir=/cockroach/cockroach-certs; kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql $flag -e \"SELECT count(*) FROM bench.decom_data;\" 2>/dev/null'"
-        timeout_sec: 15
+      - command: "python3 cases/cockroachdb/decommission/scripts/prepare.py seed probe"
+        timeout_sec: 90
     apply:
-      - command: "/bin/sh -c 'flag=--insecure; kubectl -n cockroachdb exec crdb-cluster-0 -- ls /cockroach/cockroach-certs/ca.crt >/dev/null 2>&1 && flag=--certs-dir=/cockroach/cockroach-certs; kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql $flag -e \"CREATE DATABASE IF NOT EXISTS bench; CREATE TABLE IF NOT EXISTS bench.decom_data (id INT PRIMARY KEY, payload STRING); UPSERT INTO bench.decom_data VALUES (1, '\\''alpha'\\''), (2, '\\''beta'\\''), (3, '\\''gamma'\\'');\"'"
-        timeout_sec: 120
-        sleep: 2
+      - command: "python3 -u cases/cockroachdb/decommission/scripts/prepare.py seed apply"
+        timeout_sec: 600
     verify:
-      - command: "/bin/sh -c 'flag=--insecure; kubectl -n cockroachdb exec crdb-cluster-0 -- ls /cockroach/cockroach-certs/ca.crt >/dev/null 2>&1 && flag=--certs-dir=/cockroach/cockroach-certs; kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql $flag -e \"SELECT count(*) FROM bench.decom_data;\" >/dev/null 2>&1; true'"
-        timeout_sec: 15
+      - command: "python3 cases/cockroachdb/decommission/scripts/prepare.py seed verify"
+        timeout_sec: 90
+
+  # Added nodes join the existing cluster; do not initialize it a second time.
+  - name: crdb_scale_up
+    on_probe_fail: skip
+    probe:
+      - command: "python3 cases/cockroachdb/decommission/scripts/prepare.py up probe"
+        timeout_sec: 90
+    apply:
+      - command: "python3 -u cases/cockroachdb/decommission/scripts/prepare.py up apply"
+        timeout_sec: 3600
+    verify:
+      - command: "python3 cases/cockroachdb/decommission/scripts/prepare.py up verify"
+        timeout_sec: 90
+
+  # Excess nodes are fully decommissioned before Kubernetes removes their pods.
+  # Also records current IDs/data for the Oracle when resizing is unnecessary.
+  - name: crdb_scale_down
+    on_probe_fail: skip
+    probe:
+      - command: "python3 cases/cockroachdb/decommission/scripts/prepare.py down probe"
+        timeout_sec: 90
+    apply:
+      - command: "python3 -u cases/cockroachdb/decommission/scripts/prepare.py down apply"
+        timeout_sec: 1500
+    verify:
+      - command: "python3 cases/cockroachdb/decommission/scripts/prepare.py down verify"
+        timeout_sec: 90
 
 oracle:
   verify:
     commands:
       - command: "python3 cases/cockroachdb/decommission/oracle/oracle.py"
-        timeout_sec: 120
+        timeout_sec: 240
