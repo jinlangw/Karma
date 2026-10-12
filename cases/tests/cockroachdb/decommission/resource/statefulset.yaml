@@ -1,26 +1,26 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: crdb-cluster
-  namespace: cockroachdb
+  name: ${BENCH_PARAM_CLUSTER_NAME}
+  namespace: ${BENCH_NAMESPACE}
   labels:
     app.kubernetes.io/name: cockroachdb
-    app.kubernetes.io/instance: crdb-cluster
+    app.kubernetes.io/instance: ${BENCH_PARAM_CLUSTER_NAME}
 spec:
-  serviceName: crdb-cluster
+  serviceName: ${BENCH_PARAM_CLUSTER_NAME}
   podManagementPolicy: Parallel
-  replicas: 5
+  replicas: ${BENCH_PARAM_SOURCE_NODES}
   selector:
     matchLabels:
       app.kubernetes.io/name: cockroachdb
-      app.kubernetes.io/instance: crdb-cluster
+      app.kubernetes.io/instance: ${BENCH_PARAM_CLUSTER_NAME}
   template:
     metadata:
       labels:
         app.kubernetes.io/name: cockroachdb
-        app.kubernetes.io/instance: crdb-cluster
+        app.kubernetes.io/instance: ${BENCH_PARAM_CLUSTER_NAME}
     spec:
-      serviceAccountName: crdb-cluster-sa
+      serviceAccountName: ${BENCH_PARAM_CLUSTER_NAME}-sa
       containers:
       - name: db
         image: cockroachdb/cockroach:v24.1.0
@@ -49,19 +49,19 @@ spec:
           exec /cockroach/cockroach start
           --logtostderr=INFO
           --insecure
-          --advertise-host=$(POD_NAME).crdb-cluster.$(POD_NAMESPACE).svc.cluster.local
+          --advertise-host=$(POD_NAME).${BENCH_PARAM_CLUSTER_NAME}.$(POD_NAMESPACE).svc.cluster.local
           --http-addr=0.0.0.0:8080
           --port=26257
-          --cache=25%
-          --max-sql-memory=25%
-          --join=crdb-cluster-0.crdb-cluster.$(POD_NAMESPACE).svc.cluster.local:26257,crdb-cluster-1.crdb-cluster.$(POD_NAMESPACE).svc.cluster.local:26257,crdb-cluster-2.crdb-cluster.$(POD_NAMESPACE).svc.cluster.local:26257,crdb-cluster-3.crdb-cluster.$(POD_NAMESPACE).svc.cluster.local:26257,crdb-cluster-4.crdb-cluster.$(POD_NAMESPACE).svc.cluster.local:26257
+          --cache=64MiB
+          --max-sql-memory=64MiB
+          --join=${BENCH_PARAM_CLUSTER_NAME}-0.${BENCH_PARAM_CLUSTER_NAME}.$(POD_NAMESPACE).svc.cluster.local:26257
         resources:
           requests:
-            cpu: "1"
-            memory: "2Gi"
+            cpu: "500m"
+            memory: "512Mi"
           limits:
             cpu: "1"
-            memory: "2Gi"
+            memory: "1Gi"
         livenessProbe:
           httpGet:
             path: /health
@@ -84,7 +84,7 @@ spec:
       name: datadir
       labels:
         app.kubernetes.io/name: cockroachdb
-        app.kubernetes.io/instance: crdb-cluster
+        app.kubernetes.io/instance: ${BENCH_PARAM_CLUSTER_NAME}
     spec:
       accessModes:
       - ReadWriteOnce
