@@ -16,15 +16,9 @@ import sys
 import time
 
 
-# The precondition always stands the cluster up in the literal "cockroachdb"
-# namespace (every apply/exec hardcodes `-n cockroachdb`), so the oracle must
-# look there too. Trusting BENCH_NAMESPACE here pointed the oracle at the
-# role-bound ephemeral namespace where crdb-cluster-0 does not exist, making
-# every check fail with "pods crdb-cluster-0 not found". The sibling cockroachdb
-# oracles (deploy/initialize/health-check-recovery/version-check) all hardcode
-# "cockroachdb" for the same reason.
-NAMESPACE = "cockroachdb"
-POD = "crdb-cluster-0"
+NAMESPACE = os.environ["BENCH_NAMESPACE"]
+CLUSTER_NAME = os.environ.get("BENCH_PARAM_CLUSTER_NAME", "crdb-cluster")
+POD = f"{CLUSTER_NAME}-0"
 SETTING_NAME = os.environ.get("BENCH_PARAM_SETTING_NAME", "kv.snapshot_rebalance.max_rate")
 SETTING_VALUE = os.environ.get("BENCH_PARAM_SETTING_VALUE", "128MiB")
 
@@ -112,26 +106,23 @@ _CONN_FLAG = None
 def conn_flag():
     """Return the right cockroach SQL connection flag for the live cluster.
 
-    Standalone, this case stands up an INSECURE cluster (`--insecure`). But in a
-    workflow this stage can inherit a SECURE cluster left running by a prior
-    stage (e.g. certificate-rotation), whose precondition probe sees pods already
-    Running and skips its own insecure redeploy. A hardcoded `--insecure` then
-    fails with "node is running secure mode, SSL connection required". Detect the
-    mode once by checking for the mounted certs dir and connect accordingly so
-    the same oracle works in both contexts. Cached after the first probe.
+    Reused clusters can be secure or insecure. Cache only a flag that actually
+    succeeds at SQL, rather than inferring the server mode from mounted files.
     """
     global _CONN_FLAG
     if _CONN_FLAG is not None:
         return _CONN_FLAG
-    probe = run([
-        "kubectl", "-n", NAMESPACE, "--request-timeout=15s", "exec", POD, "--",
-        "ls", "/cockroach/cockroach-certs/ca.crt",
-    ], timeout=20)
-    if probe.returncode == 0:
-        _CONN_FLAG = "--certs-dir=/cockroach/cockroach-certs"
-    else:
-        _CONN_FLAG = "--insecure"
-    return _CONN_FLAG
+    for flag in ("--certs-dir=/cockroach/cockroach-certs", "--insecure"):
+        probe = run([
+            "kubectl", "-n", NAMESPACE, "--request-timeout=15s", "exec", POD, "--",
+            "./cockroach", "sql", flag, "-e", "SELECT 1;",
+        ], timeout=10)
+        if probe.returncode == 0:
+            _CONN_FLAG = flag
+            return flag
+    # Neither connection succeeded yet. Let the existing SQL-read retry report
+    # its error, but do not cache a guess: the next read must try both again.
+    return "--insecure"
 
 
 _BYTE_UNITS = {
@@ -249,7 +240,7 @@ def check(errors, phase):
 def wait_pod_ready(deadline_sec=300):
     """Wait for POD to exist AND become Ready, tolerating the recreation window.
 
-    The agent and this oracle both restart crdb-cluster-0 to test persistence,
+    The agent and this oracle both restart the target's pod 0 to test persistence,
     so the pod is frequently mid-recreate (NotFound, then Pending) when called.
     `kubectl wait` returns immediately with an error when the pod object does
     not yet exist, so this polls until the pod reappears and reports Ready,
@@ -279,9 +270,10 @@ def wait_pod_ready(deadline_sec=300):
 
 def main():
     """Verify the configured setting matches the target before and after restart."""
+    global _CONN_FLAG
     errors = []
 
-    # The agent may have just restarted crdb-cluster-0 to test persistence
+    # The agent may have just restarted the target's pod 0 to test persistence
     # itself, leaving it briefly absent/not-ready. Wait for it to settle before
     # the first read so a transient restart window isn't mistaken for a failure.
     # Use a shorter budget here than the post-delete wait below: the worst-case
@@ -318,6 +310,10 @@ def main():
     # persisted) before its readiness probe flips back to Ready (O-funcready),
     # so a pod-Ready gate would false-fail a correct, persisted setting.
     wait_pod_ready()
+
+    # Confirm SQL connectivity again after the restart instead of relying on
+    # a cached pre-restart mode while the node is coming back.
+    _CONN_FLAG = None
 
     check(errors, "after restart")
 
