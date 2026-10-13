@@ -1,27 +1,28 @@
 # cockroachdb/deploy
 #
-# The cockroachdb namespace has RBAC resources but no workload. The agent
+# The selected cluster has RBAC resources but no workload. The agent
 # must deploy a 3-node CockroachDB cluster using native Kubernetes resources.
 
 prompt: |
-  A CockroachDB cluster needs to be deployed in the cockroachdb namespace.
+  CockroachDB cluster {{params.cluster_name}} needs to be deployed in namespace
+  ${BENCH_NAMESPACE}.
 
   OBSERVED STATE:
   - RBAC resources ready (ServiceAccount, Role, RoleBinding)
-  - No workload resources exist yet
+  - No workload or storage resources exist yet for {{params.cluster_name}}
 
   YOUR TASK:
   Deploy a 3-node CockroachDB cluster using only native Kubernetes resources.
 
   CONSTRAINTS:
   - Resources and names must be:
-    - Headless Service: crdb-cluster
-    - Public Service: crdb-cluster-public
-    - StatefulSet: crdb-cluster
+    - Headless Service: {{params.cluster_name}}
+    - Public Service: {{params.cluster_name}}-public
+    - StatefulSet: {{params.cluster_name}}
   - Every CockroachDB pod MUST carry these two labels (they are the cluster's
     canonical identity and are relied on by later operations):
     - app.kubernetes.io/name: cockroachdb
-    - app.kubernetes.io/instance: crdb-cluster
+    - app.kubernetes.io/instance: {{params.cluster_name}}
     The StatefulSet's spec.selector.matchLabels and its pod template labels must
     both include this pair, and the Services must select on it.
   - Services must expose grpc (26257) and http (8080).
@@ -37,12 +38,15 @@ prompt: |
 
   Check resources and pods:
   ```bash
-  kubectl -n cockroachdb get statefulset,service
-  kubectl -n cockroachdb get pods
-  kubectl -n cockroachdb get pvc
+  kubectl -n ${BENCH_NAMESPACE} get statefulset,service
+  kubectl -n ${BENCH_NAMESPACE} get pods
+  kubectl -n ${BENCH_NAMESPACE} get pvc
   ```
 
 params:
+  cluster_name:
+    default: crdb-cluster
+    description: CockroachDB StatefulSet name; related resources use this name as their prefix
   to_version:
     default: 24.1.0
     description: CockroachDB image version to deploy
@@ -51,7 +55,7 @@ params:
     description: Per-pod persistent volume size in GiB
 
 namespace_contract:
-  required_roles: []
+  required_roles: [default]
 
 metrics:
   - time_to_first_mutation
@@ -62,21 +66,31 @@ metrics:
   - residual_drift
 
 preconditionUnits:
-  - name: crdb_env_ready
+  # Deploy intentionally resets this target, including its data. The framework
+  # owns the namespace; other clusters and existing RBAC must survive setup.
+  - name: crdb_target_absent
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n cockroachdb get sa crdb-cluster-sa 2>/dev/null"
-        timeout_sec: 10
+      - command: "python3 cases/cockroachdb/deploy/scripts/prepare.py absent probe"
+        timeout_sec: 60
     apply:
-      - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/cockroachdb --timeout=400s || true'"
-        sleep: 1
-      - command: "kubectl create namespace cockroachdb"
-        sleep: 1
-      - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/deploy/resource/rbac.yaml"
-        sleep: 2
+      - command: "python3 -u cases/cockroachdb/deploy/scripts/prepare.py absent apply"
+        timeout_sec: 660
     verify:
-      - command: "kubectl -n cockroachdb get sa crdb-cluster-sa 2>/dev/null"
-        timeout_sec: 10
+      - command: "python3 cases/cockroachdb/deploy/scripts/prepare.py absent verify"
+        timeout_sec: 60
+
+  - name: crdb_rbac_ready
+    on_probe_fail: skip
+    probe:
+      - command: "python3 cases/cockroachdb/deploy/scripts/prepare.py rbac probe"
+        timeout_sec: 60
+    apply:
+      - command: "python3 -u cases/cockroachdb/deploy/scripts/prepare.py rbac apply"
+        timeout_sec: 90
+    verify:
+      - command: "python3 cases/cockroachdb/deploy/scripts/prepare.py rbac verify"
+        timeout_sec: 60
 
 oracle:
   verify:
