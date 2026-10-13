@@ -1,9 +1,10 @@
 # cockroachdb/expose-ingress
-# Expose CockroachDB DB Console via HTTPS ingress and SQL traffic via TCP ingress
+# Expose the selected CockroachDB console via HTTPS and SQL via TCP forwarding.
 
 prompt: |
-  A 3-node CockroachDB cluster is running in the cockroachdb namespace. The
-  ingress-nginx controller is already installed and running in ingress-nginx.
+  CockroachDB cluster {{params.cluster_name}} is running in namespace
+  ${BENCH_NAMESPACE}. The ingress-nginx controller is already installed and
+  running in ingress-nginx. The cluster may use TLS or insecure mode.
 
   Your task:
   - Make the DB Console reachable at https://{{params.ui_host}} (TLS required).
@@ -12,14 +13,22 @@ prompt: |
   Notes:
   - Use the {{params.ingress_class_name}} ingress class.
   - SQL uses a TCP protocol (not HTTP).
+  - Preserve the database's data, version, replica count, and security mode.
+  - Preserve unrelated ingress routes, TCP mappings, controller arguments, and
+    controller Service ports. Use the controller's existing TCP ConfigMap if set.
+  - Configure the console backend for its existing HTTP or HTTPS protocol.
+    Self-signed certificates are accepted for the console's HTTPS endpoint.
 
   Useful commands:
   ```bash
-  kubectl -n cockroachdb get svc,ingress
-  kubectl -n ingress-nginx get cm
+  kubectl -n ${BENCH_NAMESPACE} get svc,ingress
+  kubectl -n ingress-nginx get deploy,svc,cm
   ```
 
 params:
+  cluster_name:
+    default: crdb-cluster
+    description: CockroachDB StatefulSet name; related resources use this name as their prefix
   ui_host:
     default: crdb-ui.example.com
     description: Hostname at which the DB Console must be reachable over HTTPS
@@ -31,116 +40,66 @@ params:
     description: Ingress class used for the exposed routes
 
 namespace_contract:
-  required_roles: []
+  required_roles: [default]
 
 metrics:
   - time_to_first_mutation
 
 preconditionUnits:
+  # Reuse inherited TLS/insecure state. Only an absent target gets a fresh TLS
+  # cluster. Failed recovery does not grant permission to erase data or keys.
   - name: crdb_env_ready
     on_probe_fail: skip
     probe:
-      # AUTHORITATIVE skip-if-running probe (Pattern 7): succeed when the
-      # canonical StatefulSet exists OR any cockroach pod is Running, so the
-      # destructive namespace rebuild below is skipped on an inherited cluster
-      # even if its pods are momentarily not Running (mid-restart from a prior
-      # stage) -- the StatefulSet persists across that window. The bare
-      # `grep -c Running` could miss such a cluster and clobber inherited state.
-      - command: "/bin/sh -c 'kubectl -n cockroachdb get statefulset crdb-cluster >/dev/null 2>&1 || kubectl -n cockroachdb get pods 2>/dev/null | grep -q Running'"
-        timeout_sec: 10
+      - command: "python3 cases/cockroachdb/expose-ingress/scripts/prepare.py cluster probe"
+        timeout_sec: 180
     apply:
-      - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/cockroachdb --timeout=400s || true'"
-        timeout_sec: 460
-        sleep: 2
-      - command: "/bin/sh -c 'kubectl create namespace ingress-nginx --dry-run=client -o yaml | kubectl apply -f -'"
-        sleep: 0
-      # P26: the kind deploy.yaml includes a cluster-scoped `IngressClass nginx`;
-      # on a reused cluster a prior nginx case already owns it and a bare apply
-      # fails with an immutable-field error, aborting the precondition. Best-effort
-      # it -- the `rollout status` below (controller Deployment Ready) is the gate.
-      # P36/P18: pinned to the controller-v1.10.1 release tag -- the moving
-      # `main` branch URL drifts and can break this precondition on any pull.
-      - command: "/bin/sh -c 'kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.10.1/deploy/static/provider/kind/deploy.yaml || true'"
-        sleep: 90
-      - command: "/bin/sh -c 'kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=120s || true'"
-        sleep: 2
-      - command: "kubectl -n ingress-nginx patch deployment ingress-nginx-controller --type=json -p '[{\"op\":\"add\",\"path\":\"/spec/template/spec/containers/0/args/-\",\"value\":\"--watch-ingress-without-class=false\"}]'"
-        sleep: 1
-      - command: "/bin/sh -c 'kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=120s || true'"
-        sleep: 2
-      - command: "kubectl create namespace cockroachdb"
-        sleep: 1
-      - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/expose-ingress/resource/"
-        sleep: 5
-      - command: "/bin/sh -c 'for i in $(seq 1 30); do count=$(kubectl -n cockroachdb get pod -l app.kubernetes.io/name=cockroachdb --no-headers 2>/dev/null | wc -l | tr -d \" \"); if [ \"${count}\" -ge 1 ]; then exit 0; fi; sleep 2; done; exit 1'"
-        sleep: 1
-      - command: "kubectl -n cockroachdb wait --for=jsonpath={.status.phase}=Running pod -l app.kubernetes.io/name=cockroachdb --timeout=300s"
-        sleep: 5
-      - command: "/bin/sh -c 'for i in $(seq 1 30); do kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach init --insecure --host=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local && exit 0; sleep 3; done; exit 1'"
-        sleep: 2
-      - command: "kubectl -n cockroachdb wait --for=condition=ready pod -l app.kubernetes.io/name=cockroachdb --timeout=600s"
-        timeout_sec: 640
-        sleep: 10
-      - command: "kubectl -n cockroachdb wait --for=condition=Ready pod/curl-test --timeout=60s"
-        sleep: 2
+      - command: "python3 -u cases/cockroachdb/expose-ingress/scripts/prepare.py cluster apply"
+        timeout_sec: 900
     verify:
-      # P26 fresh-install gate: the controller rollout statuses above are
-      # best-effort (|| true) so a cold-cluster image-pull can't ERROR the
-      # precondition; this generously-timed Available wait is the real gate -- a
-      # controller that never becomes ready still fails here.
-      - command: "kubectl -n ingress-nginx wait --for=condition=Available deploy/ingress-nginx-controller --timeout=240s"
-        timeout_sec: 260
-      - command: "/bin/sh -c 'flag=--insecure; kubectl -n cockroachdb exec crdb-cluster-0 -- ls /cockroach/cockroach-certs/ca.crt >/dev/null 2>&1 && flag=--certs-dir=/cockroach/cockroach-certs; kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql $flag -e \"SELECT 1;\" 2>/dev/null'"
-        timeout_sec: 15
+      - command: "python3 cases/cockroachdb/expose-ingress/scripts/prepare.py cluster verify"
+        timeout_sec: 120
 
-  # Additive ingress-infra fixture (composition safety): the prompt states the
-  # ingress-nginx controller is ALREADY installed and the oracle execs the
-  # curl-test pod to reach the DB Console through ingress. crdb_env_ready installs
-  # the controller + creates curl-test on its destructive fresh-build path, which
-  # is SKIPPED on an inherited cluster (the probe sees crdb pods Running), so the
-  # controller and curl-test are absent -> the agent has no ingress to configure
-  # and the oracle's curl-via-ingress fails. Re-establish them additively when the
-  # controller deployment is missing: install ingress-nginx (same command the
-  # build uses) and apply curl-test. The agent's task (create the Ingress + TLS)
-  # is unchanged. Never deletes a namespace or touches the crdb StatefulSet.
-  # Standalone the controller already exists so the probe matches and this unit
-  # skips -> byte-identical standalone behaviour.
-  - name: crdb_ingress_infra
+  - name: crdb_ingress_controller_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n ingress-nginx get deploy ingress-nginx-controller"
-        timeout_sec: 10
+      - command: "python3 cases/cockroachdb/expose-ingress/scripts/prepare.py controller probe"
+        timeout_sec: 60
     apply:
-      - command: "/bin/sh -c 'kubectl create namespace ingress-nginx --dry-run=client -o yaml | kubectl apply -f -'"
-        sleep: 0
-      # P26: this manifest carries a cluster-scoped `IngressClass nginx`; on a
-      # reused cluster an nginx case already owns it and the bare apply fails
-      # `IngressClass "nginx" ... spec.controller: field is immutable`, aborting
-      # the whole precondition (the agent never runs). Make it best-effort -- the
-      # `verify` below (controller Deployment Ready) stays the real gate.
-      # P36/P18: pinned to the controller-v1.10.1 release tag -- the moving
-      # `main` branch URL drifts and can break this precondition on any pull.
-      - command: "/bin/sh -c 'kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.10.1/deploy/static/provider/kind/deploy.yaml || true'"
-        sleep: 90
-      - command: "/bin/sh -c 'kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=120s || true'"
-        sleep: 2
-      - command: "/bin/sh -c 'kubectl -n ingress-nginx patch deployment ingress-nginx-controller --type=json -p \"[{\\\"op\\\":\\\"add\\\",\\\"path\\\":\\\"/spec/template/spec/containers/0/args/-\\\",\\\"value\\\":\\\"--watch-ingress-without-class=false\\\"}]\" || true'"
-        sleep: 1
-      - command: "/bin/sh -c 'kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=120s || true'"
-        sleep: 2
-      - command: "/bin/sh -c 'kubectl -n cockroachdb get pod curl-test >/dev/null 2>&1 || kubectl -n cockroachdb apply -f cases/cockroachdb/expose-ingress/resource/curl-test.yaml'"
-        sleep: 2
-      - command: "/bin/sh -c 'kubectl -n cockroachdb wait --for=condition=Ready pod/curl-test --timeout=120s || true'"
-        sleep: 1
+      - command: "python3 -u cases/cockroachdb/expose-ingress/scripts/prepare.py controller apply"
+        timeout_sec: 660
     verify:
-      - command: "/bin/sh -c 'kubectl -n ingress-nginx get deploy ingress-nginx-controller >/dev/null 2>&1; true'"
-        timeout_sec: 10
+      - command: "python3 cases/cockroachdb/expose-ingress/scripts/prepare.py controller verify"
+        timeout_sec: 60
+
+  - name: crdb_probe_ready
+    on_probe_fail: skip
+    probe:
+      - command: "python3 cases/cockroachdb/expose-ingress/scripts/prepare.py probe probe"
+        timeout_sec: 60
+    apply:
+      - command: "python3 -u cases/cockroachdb/expose-ingress/scripts/prepare.py probe apply"
+        timeout_sec: 210
+    verify:
+      - command: "python3 cases/cockroachdb/expose-ingress/scripts/prepare.py probe verify"
+        timeout_sec: 60
+
+  # Reset only this hostname and SQL port. Inspect all ownership conflicts
+  # before mutation; keep unrelated routes, certificates, and shared objects.
+  - name: crdb_routes_absent
+    on_probe_fail: skip
+    probe:
+      - command: "python3 cases/cockroachdb/expose-ingress/scripts/prepare.py routes probe"
+        timeout_sec: 60
+    apply:
+      - command: "python3 -u cases/cockroachdb/expose-ingress/scripts/prepare.py routes apply"
+        timeout_sec: 180
+    verify:
+      - command: "python3 cases/cockroachdb/expose-ingress/scripts/prepare.py routes verify"
+        timeout_sec: 60
 
 oracle:
   verify:
     commands:
-      # 240s: the oracle re-evaluates through a possibly-mid-reload ingress for
-      # up to ~80s, plus per-attempt curl/SQL budgets, so the oracle budget must
-      # exceed the loop with headroom (O21).
       - command: "python3 cases/cockroachdb/expose-ingress/oracle/oracle.py"
         timeout_sec: 240
