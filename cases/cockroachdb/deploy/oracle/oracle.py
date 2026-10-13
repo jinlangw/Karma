@@ -11,6 +11,11 @@ import subprocess
 import sys
 
 
+NAMESPACE = os.environ["BENCH_NAMESPACE"]
+CLUSTER_NAME = os.environ.get("BENCH_PARAM_CLUSTER_NAME", "crdb-cluster")
+POD = f"{CLUSTER_NAME}-0"
+PUBLIC_SERVICE = f"{CLUSTER_NAME}-public"
+SERVICE_ACCOUNT = f"{CLUSTER_NAME}-sa"
 TO_VERSION = os.environ.get("BENCH_PARAM_TO_VERSION", "24.1.0")
 EXPECTED_IMAGE = f"cockroachdb/cockroach:v{TO_VERSION}"
 STORAGE_SIZE_GI = os.environ.get("BENCH_PARAM_STORAGE_SIZE_GI", "10")
@@ -31,7 +36,7 @@ EXPECTED_REPLICAS = int(
 # in turn lets downstream stages select pods by these labels safely.
 CANONICAL_LABELS = {
     "app.kubernetes.io/name": "cockroachdb",
-    "app.kubernetes.io/instance": "crdb-cluster",
+    "app.kubernetes.io/instance": CLUSTER_NAME,
 }
 
 
@@ -53,8 +58,8 @@ def conn_flag():
     if _CONN_FLAG is not None:
         return _CONN_FLAG
     probe = run([
-        "kubectl", "-n", "cockroachdb", "--request-timeout=15s", "exec",
-        "crdb-cluster-0", "--", "ls", "/cockroach/cockroach-certs/ca.crt",
+        "kubectl", "-n", NAMESPACE, "--request-timeout=15s", "exec",
+        POD, "--", "ls", "/cockroach/cockroach-certs/ca.crt",
     ])
     if probe.returncode == 0:
         _CONN_FLAG = "--certs-dir=/cockroach/cockroach-certs"
@@ -72,8 +77,8 @@ def _live_node_count():
     fresh init / under load). Returns (count, error_or_None).
     """
     result = run([
-        "kubectl", "-n", "cockroachdb", "--request-timeout=20s", "exec",
-        "crdb-cluster-0", "--", "./cockroach", "node", "status", conn_flag(),
+        "kubectl", "-n", NAMESPACE, "--request-timeout=20s", "exec",
+        POD, "--", "./cockroach", "node", "status", conn_flag(),
         "--format=tsv",
     ])
     if result.returncode != 0:
@@ -100,8 +105,8 @@ def _live_node_count():
 def _sql_serves():
     """Return (ok, error_or_None) for a `SELECT 1` against the cluster."""
     result = run([
-        "kubectl", "-n", "cockroachdb", "--request-timeout=20s", "exec",
-        "crdb-cluster-0", "--", "./cockroach", "sql", conn_flag(),
+        "kubectl", "-n", NAMESPACE, "--request-timeout=20s", "exec",
+        POD, "--", "./cockroach", "sql", conn_flag(),
         "-e", "SELECT 1;",
     ])
     if result.returncode != 0:
@@ -109,7 +114,7 @@ def _sql_serves():
     return True, None
 
 
-def kubectl_json(args, namespace="cockroachdb"):
+def kubectl_json(args, namespace=NAMESPACE):
     cmd = ["kubectl", "-n", namespace] + args + ["-o", "json"]
     result = run(cmd)
     if result.returncode != 0:
@@ -189,7 +194,7 @@ def _select_container(containers):
 
 
 def _check_crdbcluster_absent(errors):
-    result = run(["kubectl", "-n", "cockroachdb", "get", "crdbcluster", "-o", "json"])
+    result = run(["kubectl", "-n", NAMESPACE, "get", "crdbcluster", "-o", "json"])
     if result.returncode != 0:
         return
     try:
@@ -229,9 +234,9 @@ def evaluate():
     svc = None
     pub_svc = None
 
-    svc, err = kubectl_json(["get", "service", "crdb-cluster"])
+    svc, err = kubectl_json(["get", "service", CLUSTER_NAME])
     if err:
-        errors.append(f"Discovery service 'crdb-cluster' not found: {err}")
+        errors.append(f"Discovery service '{CLUSTER_NAME}' not found: {err}")
     else:
         cluster_ip = svc.get("spec", {}).get("clusterIP")
         if cluster_ip not in (None, "None"):
@@ -242,9 +247,9 @@ def evaluate():
         if ports.get("http") != 8080:
             errors.append("Discovery service missing http port 8080")
 
-    pub_svc, err = kubectl_json(["get", "service", "crdb-cluster-public"])
+    pub_svc, err = kubectl_json(["get", "service", PUBLIC_SERVICE])
     if err:
-        errors.append(f"Public service 'crdb-cluster-public' not found: {err}")
+        errors.append(f"Public service '{PUBLIC_SERVICE}' not found: {err}")
     else:
         svc_type = pub_svc.get("spec", {}).get("type")
         if svc_type not in (None, "ClusterIP"):
@@ -255,26 +260,26 @@ def evaluate():
         if ports.get("http") != 8080:
             errors.append("Public service missing http port 8080")
 
-    sts, err = kubectl_json(["get", "statefulset", "crdb-cluster"])
+    sts, err = kubectl_json(["get", "statefulset", CLUSTER_NAME])
     selector_labels = {}
     pod_labels = {}
     replicas = EXPECTED_REPLICAS
     if err:
-        errors.append(f"StatefulSet 'crdb-cluster' not found: {err}")
+        errors.append(f"StatefulSet '{CLUSTER_NAME}' not found: {err}")
     else:
         replicas = sts.get("spec", {}).get("replicas")
         if replicas != EXPECTED_REPLICAS:
             errors.append(f"StatefulSet should have {EXPECTED_REPLICAS} replicas, got {replicas}")
         service_name = sts.get("spec", {}).get("serviceName")
-        if service_name != "crdb-cluster":
-            errors.append(f"StatefulSet serviceName should be 'crdb-cluster', got {service_name}")
+        if service_name != CLUSTER_NAME:
+            errors.append(f"StatefulSet serviceName should be '{CLUSTER_NAME}', got {service_name}")
         sa_name = (
             sts.get("spec", {})
             .get("template", {})
             .get("spec", {})
             .get("serviceAccountName")
         )
-        if sa_name != "crdb-cluster-sa":
+        if sa_name != SERVICE_ACCOUNT:
             errors.append("StatefulSet must use the pre-provisioned ServiceAccount")
         else:
             sa, sa_err = kubectl_json(["get", "serviceaccount", sa_name])
@@ -301,17 +306,17 @@ def evaluate():
             # --advertise-addr the current one.
             if "--advertise-host" not in cmd_str and "--advertise-addr" not in cmd_str:
                 errors.append("CockroachDB start command missing --advertise-host/--advertise-addr")
-            if "crdb-cluster" not in cmd_str:
-                errors.append("CockroachDB advertise host should use the crdb-cluster DNS")
+            if CLUSTER_NAME not in cmd_str:
+                errors.append(f"CockroachDB advertise host should use the {CLUSTER_NAME} DNS")
             # The advertised address must be each pod's own stable identity: an
             # explicit POD_NAME reference, or the pod FQDN via `hostname -f`
-            # (which resolves to <pod>.crdb-cluster... -- equivalent and valid).
+            # (which resolves to <pod>.<cluster_name>... -- equivalent and valid).
             _pod_id = ("$(POD_NAME)", "${POD_NAME}", "$POD_NAME", "hostname -f", "$(hostname")
             if not any(tok in cmd_str for tok in _pod_id):
                 errors.append("CockroachDB advertise host should use the pod's stable identity")
 
             required_nodes = [
-                f"crdb-cluster-{i}.crdb-cluster" for i in range(EXPECTED_REPLICAS)
+                f"{CLUSTER_NAME}-{i}.{CLUSTER_NAME}" for i in range(EXPECTED_REPLICAS)
             ]
             missing_nodes = [node for node in required_nodes if node not in cmd_str]
             if missing_nodes:
@@ -349,7 +354,7 @@ def evaluate():
             errors.append("StatefulSet selector labels are missing")
         # Identity contract (§3.1): every later cockroachdb stage selects pods by
         # the canonical labels app.kubernetes.io/name=cockroachdb and
-        # app.kubernetes.io/instance=crdb-cluster. The deploy prompt MANDATES
+        # app.kubernetes.io/instance=<cluster_name>. The deploy prompt MANDATES
         # them, so enforce here that both the selector and the pod template carry
         # them -- otherwise a self-consistent but differently-labelled cluster
         # would be invisible to a downstream initialize/health/upgrade oracle.
@@ -402,9 +407,9 @@ def evaluate():
             if not ok:
                 errors.append(f"Cluster not serving SQL - SELECT 1: {sql_err}")
 
-    endpoints, err = kubectl_json(["get", "endpoints", "crdb-cluster"])
+    endpoints, err = kubectl_json(["get", "endpoints", CLUSTER_NAME])
     if err:
-        errors.append(f"Failed to read endpoints for crdb-cluster: {err}")
+        errors.append(f"Failed to read endpoints for {CLUSTER_NAME}: {err}")
     else:
         # Identity/routing check only: the headless service must enroll every
         # replica. Count notReadyAddresses too -- endpoint READINESS mirrors the
