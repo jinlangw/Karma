@@ -2,9 +2,11 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: openssl-toolbox
-  namespace: cockroachdb
+  namespace: ${BENCH_NAMESPACE}
   labels:
     app.kubernetes.io/name: openssl-toolbox
+    app.kubernetes.io/instance: ${BENCH_PARAM_CLUSTER_NAME}
+    karma.dev/fixture: cert-toolbox
 spec:
   containers:
   - name: openssl
