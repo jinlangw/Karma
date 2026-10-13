@@ -1,151 +1,89 @@
 #!/usr/bin/env python3
-# Verify the DB Console + SQL are reachable through ingress-nginx. The UI host
-# (BENCH_PARAM_UI_HOST) and SQL port (BENCH_PARAM_SQL_PORT) come from the case
-# params, so a workflow that overrides them is honored instead of a hardcoded
-# value. Standalone (default params) this behaves identically.
-import os
-import subprocess
+"""Verify target routing, HTTPS console access, and SQL cluster identity."""
+import csv
+import io
+from pathlib import Path
+import re
+import ssl
 import sys
+import tempfile
+import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from cluster import Cluster
+from routes import CONTROLLER_HOST, Routes
 
 
-UI_HOST = os.environ.get("BENCH_PARAM_UI_HOST", "crdb-ui.example.com")
-# The prompt requires the DB Console to be reachable over HTTPS (TLS required),
-# so verify the HTTPS endpoint. -k allows the self-signed cert; the Host header
-# routes the request to the UI ingress. A plain-HTTP-only solution will fail.
-INGRESS_HTTPS_URL = "https://ingress-nginx-controller.ingress-nginx.svc/"
-SQL_HOST = "ingress-nginx-controller.ingress-nginx.svc"
-SQL_PORT = os.environ.get("BENCH_PARAM_SQL_PORT", "26257")
+def validate_ui_certificate(cluster):
+    for ingress in cluster.get_all_ingresses():
+        if ingress["metadata"]["namespace"] != cluster.namespace:
+            continue
+        for entry in ingress["spec"].get("tls", []):
+            if cluster.ui_host not in entry.get("hosts", []) or not entry.get("secretName"):
+                continue
+            secret = cluster.get("secret", entry["secretName"])
+            if secret is None:
+                continue
+            import base64
+            with tempfile.TemporaryDirectory(prefix="karma-ui-cert-") as directory:
+                root = Path(directory)
+                try:
+                    for field in ("tls.crt", "tls.key"):
+                        (root / field).write_bytes(base64.b64decode(secret["data"][field], validate=True))
+                    ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_cert_chain(root / "tls.crt", root / "tls.key")
+                except (KeyError, ValueError, ssl.SSLError):
+                    continue
+            return
+    raise RuntimeError("requested UI hostname has no usable TLS certificate/key pair")
 
 
-def run(cmd, timeout=45):
-    """Run a command with a hard timeout (O17); a timeout becomes a failed result."""
-    try:
-        return subprocess.run(
-            cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        return subprocess.CompletedProcess(
-            cmd, 124, exc.stdout or "", (exc.stderr or "") + "\n[command timed out]"
-        )
-
-
-_CONN_FLAG = None
-
-
-def conn_flag():
-    """Return the right cockroach SQL connection flag for the live cluster.
-
-    Standalone this case runs against an INSECURE cluster (`--insecure`). But in
-    a workflow this stage can inherit a SECURE cluster left running by a prior
-    stage (e.g. certificate-rotation), whose precondition probe sees pods already
-    Running and skips its own insecure redeploy. A hardcoded `--insecure` then
-    fails with an SSL authentication error. Detect the mode once by checking for
-    the mounted certs dir and connect accordingly so the same oracle works in
-    both contexts. Mirrors cockroachdb/cluster-settings/oracle/oracle.py.
-    """
-    global _CONN_FLAG
-    if _CONN_FLAG is not None:
-        return _CONN_FLAG
-    probe = run([
-        "kubectl", "-n", "cockroachdb", "--request-timeout=15s", "exec",
-        "crdb-cluster-0", "--", "ls", "/cockroach/cockroach-certs/ca.crt",
-    ])
-    if probe.returncode == 0:
-        _CONN_FLAG = "--certs-dir=/cockroach/cockroach-certs"
-    else:
-        _CONN_FLAG = "--insecure"
-    return _CONN_FLAG
-
-
-def check_ui(errors):
-    cmd = [
-        "kubectl",
-        "-n",
-        "cockroachdb",
-        "exec",
-        "curl-test",
-        "--",
-        "curl",
-        "-sS",
-        "-k",
-        # Bound the probe (O17): a mid-reload controller can otherwise hold the
-        # connection open to the exec deadline.
-        "--connect-timeout",
-        "5",
-        "--max-time",
-        "20",
-        "-o",
-        "/dev/null",
-        "-w",
-        "%{http_code}",
-        "-H",
-        f"Host: {UI_HOST}",
-        INGRESS_HTTPS_URL,
-    ]
-    result = run(cmd)
-    if result.returncode != 0:
-        errors.append(result.stderr.strip() or "Failed to curl UI through ingress")
-        return
-    code = result.stdout.strip()
-    if not code.isdigit():
-        errors.append(f"Unexpected HTTP status output: {code}")
-        return
-    status = int(code)
-    if status < 200 or status >= 400:
-        errors.append(f"UI ingress returned HTTP {status}")
-
-
-def check_sql(errors):
-    base = ["kubectl", "-n", "cockroachdb", "exec", "crdb-cluster-0", "--", "./cockroach", "sql"]
-    if conn_flag() == "--insecure":
-        cmd = base + ["--insecure", "--host", SQL_HOST, "--port", SQL_PORT, "-e", "SELECT 1;"]
-    else:
-        # Secure cluster (inherited from certificate-rotation etc.): connect through
-        # the ingress with sslmode=require. This verifies SQL routes through the
-        # ingress over TLS and authenticates with the client cert, WITHOUT verifying
-        # the server cert's hostname -- a DB node cert is never valid for the ingress
-        # proxy's name, so --certs-dir (which forces verify-full) always fails here.
-        url = (f"postgresql://root@{SQL_HOST}:{SQL_PORT}/?sslmode=require"
-               "&sslcert=/cockroach/cockroach-certs/client.root.crt"
-               "&sslkey=/cockroach/cockroach-certs/client.root.key")
-        cmd = base + ["--url", url, "-e", "SELECT 1;"]
-    result = run(cmd)
-    if result.returncode != 0:
-        msg = result.stderr.strip() or result.stdout.strip()
-        errors.append(msg or "SQL query through ingress failed")
+def cluster_id(result):
+    rows = list(csv.reader(io.StringIO(Cluster.require(result))))
+    if len(rows) != 2 or len(rows[1]) != 1 or not re.fullmatch(r"[0-9a-fA-F-]{36}", rows[1][0]):
+        raise RuntimeError("SQL did not return a CockroachDB cluster identity")
+    return rows[1][0]
 
 
 def evaluate():
-    """One full snapshot of the ingress checks; returns the error list (O28)."""
-    errors = []
-    check_ui(errors)
-    check_sql(errors)
-    return errors
+    cluster = Cluster()
+    try:
+        sts = cluster.get("statefulset", cluster.name)
+        if sts is None:
+            raise RuntimeError("selected StatefulSet is missing")
+        cluster.service_ready(sts)
+        Routes(cluster).configured()
+        validate_ui_certificate(cluster)
+        # Route with the requested SNI/Host while connecting inside Kubernetes.
+        response = cluster.require(cluster.kubectl("exec", cluster.name + "-curl-test", "--",
+            "curl", "-sS", "-k", "--connect-timeout", "5", "--max-time", "20",
+            "--connect-to", f"{cluster.ui_host}:443:{CONTROLLER_HOST}:443",
+            "-o", "/dev/null", "-w", "%{http_code}", f"https://{cluster.ui_host}/", timeout=30)).strip()
+        if not response.isdigit() or not 200 <= int(response) < 400:
+            raise RuntimeError(f"UI ingress returned HTTP {response}")
+        # A SELECT 1 against a different healthy DB must not earn a pass.
+        query = "SELECT crdb_internal.cluster_id();"
+        direct = cluster_id(cluster.sql(query))
+        forwarded = cluster_id(cluster.sql(query, through_ingress=True, timeout=20))
+        if direct != forwarded:
+            raise RuntimeError("SQL forwarding reaches a different CockroachDB cluster")
+        cluster.require(cluster.sql("SELECT 1;", through_ingress=True, timeout=20))
+        return []
+    except (RuntimeError, ValueError, KeyError, OSError) as error:
+        return [str(error)]
 
 
 def main():
-    # Both checks route through ingress-nginx, which can be mid-reload (the
-    # agent just wrote the Ingress/ConfigMap; a controller replica is warming)
-    # at the instant a single-shot probe fires -- a transient 502/503/504 or a
-    # refused TCP connect then fails a correct solution (O13/O40; status codes
-    # are re-polled, not just exec errors). Re-evaluate for up to ~80s and pass
-    # on the first clean snapshot; a genuinely unrouted ingress keeps failing
-    # after the deadline. The loop fits under the oracle timeout_sec (O21).
-    import time
     deadline = time.monotonic() + 80
     errors = evaluate()
     while errors and time.monotonic() < deadline:
         time.sleep(7)
         errors = evaluate()
-
     if errors:
         print("Expose ingress verification failed:", file=sys.stderr)
         for error in errors:
-            print(f"  - {error}", file=sys.stderr)
+            print("  - " + error, file=sys.stderr)
         return 1
-
-    print("UI and SQL traffic verified through ingress-nginx")
+    print("HTTPS console and SQL traffic verified through ingress-nginx for the selected cluster")
     return 0
 
 

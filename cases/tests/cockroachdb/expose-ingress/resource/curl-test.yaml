@@ -1,8 +1,12 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: curl-test
-  namespace: cockroachdb
+  name: ${BENCH_PARAM_CLUSTER_NAME}-curl-test
+  namespace: ${BENCH_NAMESPACE}
+  labels:
+    app.kubernetes.io/name: curl
+    app.kubernetes.io/instance: ${BENCH_PARAM_CLUSTER_NAME}
+    karma.dev/fixture: ingress-probe
 spec:
   restartPolicy: Never
   containers:
