@@ -2,12 +2,12 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: prometheus-operator
-  namespace: monitoring
+  namespace: ${BENCH_PARAM_MONITORING_NAMESPACE}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: prometheus-operator
+  name: ${BENCH_MONITORING_RBAC_PREFIX}-prometheus-operator
 rules:
 - apiGroups: ["monitoring.coreos.com"]
   resources:
@@ -17,6 +17,7 @@ rules:
   - prometheusrules
   - probes
   - alertmanagers
+  - alertmanagerconfigs
   - thanosrulers
   - scrapeconfigs
   - prometheusagents
@@ -68,21 +69,21 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: prometheus-operator
+  name: ${BENCH_MONITORING_RBAC_PREFIX}-prometheus-operator
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: prometheus-operator
+  name: ${BENCH_MONITORING_RBAC_PREFIX}-prometheus-operator
 subjects:
 - kind: ServiceAccount
   name: prometheus-operator
-  namespace: monitoring
+  namespace: ${BENCH_PARAM_MONITORING_NAMESPACE}
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: prometheus-operator
-  namespace: monitoring
+  namespace: ${BENCH_PARAM_MONITORING_NAMESPACE}
   labels:
     app: prometheus-operator
 spec:
@@ -100,6 +101,7 @@ spec:
       - name: operator
         image: quay.io/prometheus-operator/prometheus-operator:v0.75.2
         args:
+        - --namespaces=${BENCH_PARAM_MONITORING_NAMESPACE},${BENCH_NAMESPACE}
         - --log-level=info
         - --log-format=logfmt
         - --prometheus-config-reloader=quay.io/prometheus-operator/prometheus-config-reloader:v0.75.2

@@ -2,12 +2,12 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: prometheus
-  namespace: monitoring
+  namespace: ${BENCH_PARAM_MONITORING_NAMESPACE}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: prometheus
+  name: ${BENCH_MONITORING_RBAC_PREFIX}-prometheus
 rules:
 - apiGroups: [""]
   resources:
@@ -21,12 +21,12 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: prometheus
+  name: ${BENCH_MONITORING_RBAC_PREFIX}-prometheus
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: prometheus
+  name: ${BENCH_MONITORING_RBAC_PREFIX}-prometheus
 subjects:
 - kind: ServiceAccount
   name: prometheus
-  namespace: monitoring
+  namespace: ${BENCH_PARAM_MONITORING_NAMESPACE}
