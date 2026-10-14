@@ -1,59 +1,50 @@
 # cockroachdb/initialize
-#
-# A 3-node CockroachDB cluster is deployed but not initialized. The pods
-# log join/advertise errors. The agent must fix the configuration and
-# initialize the cluster so it becomes SQL-ready.
+# Prepare uninitialized nodes and a verified join-configuration fault.
 
 prompt: |
-  A {{params.replica_count}}-node CockroachDB cluster has been deployed but not yet initialized.
-
-  OBSERVED STATE:
-  - CockroachDB pods are running but the cluster is not forming
-  - Pod logs show join/advertise errors when attempting to contact peer nodes
+  CockroachDB cluster {{params.cluster_name}} in namespace ${BENCH_NAMESPACE}
+  is deployed but has not yet been initialized. Its nodes cannot contact peers
+  because their join configuration is incorrect.
 
   YOUR TASK:
-  Diagnose and fix the configuration so all {{params.replica_count}} nodes can join.
-  Initialize the CockroachDB cluster so it becomes SQL-ready.
+  Diagnose and correct the join configuration, then initialize the cluster.
+  Make every node in the existing StatefulSet join the same database cluster
+  and accept SQL connections.
 
   CONSTRAINTS:
-  - Use existing resources; do not recreate the cluster.
-  - No CRDs/operators/Helm.
-  - Insecure mode (no TLS) for this case.
+  - Use existing resources; do not recreate the StatefulSet or reset its stores.
+  - Preserve the existing replica count, version, storage and other startup options.
+  - Preserve the existing TLS or insecure mode and certificate material.
+  - No CRDs/operators/Helm. Leave other workloads and namespace resources untouched.
+  - Restore the StatefulSet's original update strategy after recovery. The
+    case-owned {{params.cluster_name}}-initialize-baseline ConfigMap records it.
 
   HINT:
-  Use in-cluster tooling available in the CockroachDB pods.
-
-  GOAL:
-  - Cluster accepts SQL connections.
-  - {{params.replica_count}} nodes are healthy and visible in cluster status.
+  Inspect the actual server startup, pod logs, and the headless Service.
+  Nodes waiting for initialization may be Running but not Ready. Rolling updates
+  can stall on unready nodes; ensure the corrected command reaches every node.
+  Use the connection flags appropriate to the existing security mode.
 
   Useful commands:
   ```bash
-  # View pod logs
-  kubectl -n cockroachdb logs crdb-cluster-0
-
-  # Check all pods
-  kubectl -n cockroachdb get pods
-
-  # Interactive SQL shell
-  kubectl -n cockroachdb exec -it crdb-cluster-0 -- ./cockroach sql --insecure
+  kubectl -n ${BENCH_NAMESPACE} get statefulset {{params.cluster_name}} -o yaml
+  kubectl -n ${BENCH_NAMESPACE} logs {{params.cluster_name}}-0
+  kubectl -n ${BENCH_NAMESPACE} get pods
   ```
 
 params:
+  cluster_name:
+    default: crdb-cluster
+    description: CockroachDB StatefulSet name; related resources use this name as their prefix
   replica_count:
     default: 3
-    description: Number of CockroachDB nodes that must join and become healthy
+    description: Number of nodes for a fresh deployment; inherited deployments retain their replica count
   crdb_version:
     default: 24.1.0
-    description: >-
-      CockroachDB image version the cluster is deployed at. Parameterized so a
-      workflow that established a different version baseline in an earlier stage
-      can pass it through here (or, when this stage's destructive build runs at
-      all, deploy at the workflow's intended version) instead of clobbering it
-      with a hardcoded image.
+    description: CockroachDB image version for a fresh deployment; inherited deployments retain their version
 
 namespace_contract:
-  required_roles: []
+  required_roles: [default]
 
 metrics:
   - time_to_first_mutation
@@ -67,55 +58,41 @@ preconditionUnits:
   - name: crdb_env_ready
     on_probe_fail: skip
     probe:
-      # AUTHORITATIVE skip-if-running probe. The destructive apply below
-      # delete+recreates the whole namespace, so it MUST run only when no
-      # cockroachdb cluster is present — otherwise it clobbers inherited workflow
-      # state (e.g. a version baseline a prior stage upgraded/downgraded to).
-      # Match the canonical StatefulSet OR any Running cockroach pod; the old
-      # `grep -c ''` counted lines and effectively always succeeded, which masks
-      # both presence and absence. Succeeding here means "cluster present, reuse
-      # it"; failing (no STS and no Running pod) triggers the fresh build.
-      - command: "/bin/sh -c 'kubectl -n cockroachdb get statefulset crdb-cluster >/dev/null 2>&1 || kubectl -n cockroachdb get pods -l app.kubernetes.io/name=cockroachdb --no-headers 2>/dev/null | grep -q Running'"
-        timeout_sec: 10
+      - command: "python3 cases/cockroachdb/initialize/scripts/prepare.py cluster probe"
+        timeout_sec: 180
     apply:
-      # This whole apply is GATED by the skip-if-running probe above, so it runs
-      # ONLY when no cockroachdb cluster is present (empty/absent namespace). It
-      # therefore never wipes inherited workflow state. Clear any stale/terminating
-      # namespace first, then deploy the (deliberately mis-configured, uninitialized)
-      # cluster — without the wait-for-delete, `create namespace` races a namespace
-      # left Terminating by a prior teardown ("AlreadyExists: object is being deleted").
-      - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/cockroachdb --timeout=400s || true'"
-        timeout_sec: 460
-        sleep: 2
-      - command: "kubectl create namespace cockroachdb"
-        sleep: 1
-      - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/initialize/resource/rbac.yaml"
-        sleep: 2
-      - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/initialize/resource/services.yaml"
-        sleep: 2
-      # Render the StatefulSet image from the case param. Whitelist only
-      # BENCH_PARAM_CRDB_VERSION so envsubst does not erase the in-manifest
-      # $(POD_NAME)/$(POD_NAMESPACE) downward-API references.
-      - command: "/bin/sh -c 'envsubst '\\''${BENCH_PARAM_CRDB_VERSION}'\\'' < cases/cockroachdb/initialize/resource/statefulset.yaml | kubectl -n cockroachdb apply -f -'"
-        sleep: 5
-      # `kubectl wait pod/crdb-cluster-0` returns NotFound immediately if the pod
-      # object does not exist yet -- under load the StatefulSet controller can lag
-      # several seconds behind the apply before it creates pod-0. Wait for the pod
-      # to EXIST first, then for it to be scheduled.
-      - command: "/bin/sh -c 'for i in $(seq 1 60); do kubectl -n cockroachdb get pod crdb-cluster-0 >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1'"
-        timeout_sec: 130
-        sleep: 1
-      - command: "kubectl -n cockroachdb wait --for=condition=PodScheduled pod/crdb-cluster-0 --timeout=300s"
-        timeout_sec: 320
-        sleep: 5
-      - command: "kubectl -n cockroachdb get pods"
-        sleep: 1
+      - command: "python3 cases/cockroachdb/initialize/scripts/prepare.py cluster apply"
+        timeout_sec: 600
     verify:
-      - command: "kubectl -n cockroachdb get pods -l app.kubernetes.io/name=cockroachdb --no-headers 2>/dev/null | grep -c ''"
-        timeout_sec: 15
+      - command: "python3 cases/cockroachdb/initialize/scripts/prepare.py cluster verify"
+        timeout_sec: 180
+
+  - name: crdb_uninitialized_ready
+    on_probe_fail: skip
+    probe:
+      - command: "python3 cases/cockroachdb/initialize/scripts/prepare.py reset probe"
+        timeout_sec: 120
+    apply:
+      - command: "python3 cases/cockroachdb/initialize/scripts/prepare.py reset apply"
+        timeout_sec: 1200
+    verify:
+      - command: "python3 cases/cockroachdb/initialize/scripts/prepare.py reset verify"
+        timeout_sec: 120
+
+  - name: crdb_join_config_fault_ready
+    on_probe_fail: skip
+    probe:
+      - command: "python3 cases/cockroachdb/initialize/scripts/prepare.py fault probe"
+        timeout_sec: 120
+    apply:
+      - command: "python3 cases/cockroachdb/initialize/scripts/prepare.py fault apply"
+        timeout_sec: 600
+    verify:
+      - command: "python3 cases/cockroachdb/initialize/scripts/prepare.py fault verify"
+        timeout_sec: 120
 
 oracle:
   verify:
     commands:
       - command: "python3 cases/cockroachdb/initialize/oracle/oracle.py --timeout 5"
-        timeout_sec: 120
+        timeout_sec: 240
