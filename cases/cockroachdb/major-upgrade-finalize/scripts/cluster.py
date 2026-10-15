@@ -342,12 +342,15 @@ class Cluster:
                 name = obj['metadata']['name']
                 if all(obj['metadata'].get('labels', {}).get(k) == v for k, v in self.labels.items()) or name.startswith(self.name + '-') or re.search('-' + re.escape(self.name) + r'-\d+$', name):
                     raise UnsafeState('target StatefulSet is absent but inherited pods or stores remain')
+        source = os.environ.get('BENCH_PARAM_FROM_VERSION', '23.2')
+        if source.count('.') == 1:
+            source += '.0'
         directory = Path(__file__).resolve().parents[1] / 'resource'
         pending = []
         for filename in ('rbac.yaml', 'services.yaml', 'statefulset.yaml'):
             text = (directory / filename).read_text()
             for key, value in {'BENCH_NAMESPACE': self.namespace, 'BENCH_PARAM_CLUSTER_NAME': self.name,
-                               'BENCH_PARAM_FROM_VERSION': os.environ.get('BENCH_PARAM_FROM_VERSION', '23.2')}.items():
+                               'BENCH_PARAM_FROM_VERSION': source}.items():
                 text = text.replace('${' + key + '}', value)
             for obj in yaml.safe_load_all(text):
                 if obj['kind'] == 'StatefulSet':

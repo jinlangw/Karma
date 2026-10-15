@@ -12,7 +12,7 @@ import uuid
 
 from cluster import Cluster, UnsafeState, arguments, database_container
 from storage import Stores, signatures
-from versions import RELEASES, PINNED, image, image_version, parameters, series, source_ready, state
+from versions import RELEASES, PINNED, image, image_version, parameters, patch_upgrade, release, series, source_ready, source_version, state
 
 
 def without_image(template):
@@ -34,6 +34,8 @@ class Preparation(Stores):
     def __init__(self, cluster):
         self.cluster = cluster
         self.source, self.target = parameters()
+        self.source_release = release(self.source)
+        self.patch = patch_upgrade(self.source, self.target)
         self.name = cluster.name + '-major-upgrade-baseline'
 
     def load(self):
@@ -71,7 +73,29 @@ class Preparation(Stores):
             raise UnsafeState('mounted Secret identity or contents changed')
 
     def same_task(self, baseline):
-        return baseline['data']['source'] == self.source and baseline['data']['target_series'] == '.'.join(map(str, series(self.target)))
+        data = baseline['data']
+        if data['source'] != self.source or data['target_series'] != release(self.target):
+            return False
+        if self.patch:
+            return data.get('upgrade_kind') == 'patch' and data.get('target') == self.target
+        return data.get('upgrade_kind', 'major') == 'major'
+
+    @staticmethod
+    def task_key(data):
+        kind = data.get('upgrade_kind', 'major')
+        target = data.get('target') if kind == 'patch' else data['target_series']
+        return kind + ':' + data['source'] + '->' + target
+
+    def load_for_task(self):
+        baseline = self.load()
+        if baseline is None or self.same_task(baseline):
+            return baseline
+        task = {'source': self.source, 'target': self.target,
+                'target_series': release(self.target), 'upgrade_kind': 'patch' if self.patch else 'major'}
+        data = json.loads(baseline['data'].get('history', '{}')).get(self.task_key(task))
+        if data is None or data.get('statefulset_uid') != baseline['data']['statefulset_uid']:
+            return None
+        return {**baseline, 'data': data}
 
     def environment_probe(self):
         baseline = self.load()
@@ -102,6 +126,8 @@ class Preparation(Stores):
         return True
 
     def source_binary(self, current, release):
+        if release == self.source_release and (self.patch or self.source.count('.') == 2):
+            return source_version(self.source)
         candidates = [v for v in current['binaries'] if series(v) == series(release)]
         if not candidates:
             # A held newer-binary cluster can retain the original source patch
@@ -122,17 +148,17 @@ class Preparation(Stores):
     def plan(self, current):
         logical = current['logical']
         if series(logical) > series(self.source):
-            return {'reset': True, 'steps': [{'binary': PINNED[self.source], 'logical': self.source}]}
+            return {'reset': True, 'steps': [{'binary': source_version(self.source), 'logical': self.source_release}]}
         if logical not in RELEASES:
             raise UnsafeState('no documented prerequisite upgrade path for inherited logical version')
         index = RELEASES.index(logical)
         permitted = {series(logical)} | ({series(RELEASES[index + 1])} if index + 1 < len(RELEASES) else set())
         if any(series(v) not in permitted for v in current['binaries']):
             raise UnsafeState('inherited binaries are outside a supported rolling compatibility window')
-        if logical == self.source:
-            return {'reset': False, 'steps': [{'binary': self.source_binary(current, self.source), 'logical': self.source}]}
+        if logical == self.source_release:
+            return {'reset': False, 'steps': [{'binary': self.source_binary(current, self.source_release), 'logical': self.source_release}]}
         return {'reset': False, 'steps': [{'binary': self.source_binary(current, release), 'logical': release}
-                for release in RELEASES[index + 1:RELEASES.index(self.source) + 1]]}
+                for release in RELEASES[index + 1:RELEASES.index(self.source_release) + 1]]}
 
     def validate_binary(self, version, sts):
         """Parse inherited startup using the chosen binary, without any stores."""
@@ -190,7 +216,7 @@ class Preparation(Stores):
                     self.source_probe()
                     return
                 except RuntimeError:
-                    if baseline['data']['phase'] != 'held':
+                    if baseline['data']['phase'] != 'held' and baseline['data'].get('upgrade_kind') != 'patch':
                         raise
             c.wait(c.ready, 180)
             current = state(c)
@@ -199,7 +225,8 @@ class Preparation(Stores):
             stores = self.preflight(sts, baseline)
             for version in dict.fromkeys(step['binary'] for step in plan['steps']):
                 self.validate_binary(version, sts)
-            data = {'source': self.source, 'target_series': '.'.join(map(str, series(self.target))),
+            data = {'source': self.source, 'target_series': release(self.target),
+                'target': self.target, 'upgrade_kind': 'patch' if self.patch else 'major',
                 'statefulset_uid': sts['metadata']['uid'], 'namespace_uid': c.get('namespace', c.namespace, namespace='')['metadata']['uid'],
                 'replicas': str(sts['spec']['replicas']), 'original_template': json.dumps(sts['spec']['template'], sort_keys=True),
                 'workload_spec': json.dumps(workload_spec(sts), sort_keys=True),
@@ -211,6 +238,12 @@ class Preparation(Stores):
                 'initial_state': json.dumps(current, sort_keys=True), 'plan': json.dumps(plan, sort_keys=True),
                 'nonce': uuid.uuid4().hex[:12], 'step_index': '0', 'phase': 'resetting' if plan['reset'] else 'rolling'}
             if baseline:
+                # Keep completed task records for earlier workflow oracles.
+                # The active record alone is used to resume preparation.
+                if not self.same_task(baseline) and baseline['data']['phase'] in ('prepared', 'held'):
+                    history = json.loads(baseline['data'].get('history', '{}'))
+                    history[self.task_key(baseline['data'])] = {k: v for k, v in baseline['data'].items() if k != 'history'}
+                    data['history'] = json.dumps(history, sort_keys=True)
                 baseline = self.update(baseline, data)
             else:
                 c.create({'apiVersion': 'v1', 'kind': 'ConfigMap', 'metadata': {'name': self.name, 'namespace': c.namespace,
@@ -230,7 +263,18 @@ class Preparation(Stores):
         if (identity == old) == plan['reset']:
             raise UnsafeState('database identity changed contrary to the recorded reset policy')
         c.patch_spec(c.statefulset(), {'updateStrategy': json.loads(baseline['data']['original_strategy'])})
-        self.update(self.load(), {'phase': 'prepared', 'normalized_uuid': identity})
+        values = {'phase': 'prepared', 'normalized_uuid': identity}
+        if self.patch:
+            # A held newer binary can roll back while its logical release stays
+            # put. Restore that inherited policy after the source is coherent.
+            initial = json.loads(baseline['data']['initial_state'])
+            if initial['logical'] == self.source_release:
+                hold = baseline['data']['initial_preserve']
+                if c.setting('cluster.preserve_downgrade_option') != hold:
+                    c.require(c.sql("SET CLUSTER SETTING cluster.preserve_downgrade_option='" + hold + "';" if hold else "RESET CLUSTER SETTING cluster.preserve_downgrade_option;"))
+            values['source_preserve'] = c.setting('cluster.preserve_downgrade_option')
+            values['source_auto_upgrade'] = c.setting('cluster.auto_upgrade.enabled') if series(self.source) >= (23, 2) else '(unavailable)'
+        self.update(self.load(), values)
         self.source_probe()
 
     def hold(self, logical):
@@ -308,7 +352,12 @@ class Preparation(Stores):
                         print('Logical version advanced before any selected image/store change; replanning verified source preparation', flush=True)
                         return False
                     raise UnsafeState('logical version advanced beyond a pending rolling step')
-                self.hold(logical)
+                # Same-release binaries cannot advance the logical release.
+                # Keep patch-only preparation from changing inherited policies.
+                if (not self.patch or logical != step['logical']
+                        or any(series(image_version(database_container({'spec': pod['spec']})['image'])) > series(logical)
+                               for pod in c.pods(c.statefulset()))):
+                    self.hold(logical)
                 self.roll_to(baseline, step['binary'])
                 if logical != step['logical']:
                     baseline = self.update(self.load(), {'phase': 'finalizing'})
@@ -360,7 +409,9 @@ class Preparation(Stores):
     def hold_probe(self):
         self.source_probe()
         baseline = self.load()
-        if baseline['data']['phase'] != 'held' or self.cluster.setting('cluster.preserve_downgrade_option') != self.source:
+        if self.patch:
+            return True
+        if baseline['data']['phase'] != 'held' or self.cluster.setting('cluster.preserve_downgrade_option') != self.source_release:
             raise RuntimeError('upgrade finalization hold is not prepared')
         if series(self.source) >= (23, 2) and not enabled(self.cluster.setting('cluster.auto_upgrade.enabled')):
             raise RuntimeError('automatic upgrade policy would block finalization after hold release')
@@ -368,7 +419,9 @@ class Preparation(Stores):
 
     def hold_apply(self):
         self.source_probe()  # Independently block after an earlier unit failed.
-        self.hold(self.source)
+        if self.patch:
+            return
+        self.hold(self.source_release)
         if series(self.source) >= (23, 2) and not enabled(self.cluster.setting('cluster.auto_upgrade.enabled')):
             self.cluster.require(self.cluster.sql('SET CLUSTER SETTING cluster.auto_upgrade.enabled=true;'))
         baseline = self.load()
