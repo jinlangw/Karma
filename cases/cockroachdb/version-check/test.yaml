@@ -1,114 +1,112 @@
-# cockroachdb/version-check
-#
-# A CockroachDB cluster was upgraded from v{{params.from_version}} to v24.1. The agent must
-# record the active feature version in a ConfigMap and finalize the upgrade
-# by clearing the downgrade option.
-
+# Read the active feature version from a healthy, held newer-binary cluster.
 prompt: |
-  Determine which feature set the cluster is currently operating under
-  and record it in ConfigMap {{params.report_configmap_name}} under key {{params.report_key}}.
+  Determine the CURRENT active feature version of CockroachDB StatefulSet
+  {{params.cluster_name}} in namespace ${BENCH_NAMESPACE} and record it in a ConfigMap.
+  This is a read-only task: preserve database settings, finalization holds, workload
+  configuration, storage and TLS material. Do not upgrade or finalize the cluster.
+  The running binary/image version and active feature version are different concepts.
 
-  Useful commands:
-  ```bash
-  kubectl -n cockroachdb exec crdb-cluster-0 -- \
-    ./cockroach sql --insecure -e "SHOW CLUSTER SETTING version;"
-  kubectl -n cockroachdb exec crdb-cluster-0 -- \
-    ./cockroach sql --insecure -e "SELECT version();"
-  ```
+  Inspect the selected workload's startup configuration to discover its SQL port
+  and connection mode. Use its mounted client certificates when TLS is enabled.
+  Query SHOW CLUSTER SETTING version; to determine the active feature version.
+  SELECT version(); reports the running binary instead.
 
-  Verification:
-  1. ConfigMap recorded:
-     kubectl -n cockroachdb get configmap {{params.report_configmap_name}} -o yaml
-  2. Cluster version:
-     kubectl -n cockroachdb exec crdb-cluster-0 -- \
-       ./cockroach sql --insecure -e "SHOW CLUSTER SETTING version;"
-  3. Binary version:
-     kubectl -n cockroachdb exec crdb-cluster-0 -- \
-       ./cockroach sql --insecure -e "SELECT version();"
-  4. Preserve downgrade option:
-     kubectl -n cockroachdb exec crdb-cluster-0 -- \
-       ./cockroach sql --insecure -e "SHOW CLUSTER SETTING cluster.preserve_downgrade_option;"
+  Compute this stage's report name:
+    version_id=$(printf '%s' "${BENCH_NAMESPACE}/{{params.cluster_name}}/${BENCH_RUN_ID}/${BENCH_STAGE_ID}" | shasum -a 256 | cut -c1-20)
+    report_name="{{params.report_configmap_name}}-${version_id}"
+  Create that ConfigMap in ${BENCH_NAMESPACE}, with the active feature version as
+  plain text under key {{params.report_key}} and labels:
+    app.kubernetes.io/name: cockroachdb
+    app.kubernetes.io/instance: {{params.cluster_name}}
+    karma.dev/fixture: version-check
+    karma.dev/version-id: <version_id>
 
+  Preserve earlier reports and the framework's encrypted baseline. Submit a readable
+  value obtained from the live database. Creating this stage's report is the only
+  permitted mutation.
 params:
+  cluster_name:
+    default: crdb-cluster
+    description: CockroachDB StatefulSet name
   from_version:
-    default: "23.2"
-    description: CockroachDB version the cluster was upgraded from
+    default: '23.2'
+    description: Fallback source family or exact patch; used only to create missing/broken environments
+      or reset unsupported version states
   to_version:
     default: 24.1.0
-    description: CockroachDB version the cluster was upgraded to
+    description: Fallback compatible newer-family binary patch; legacy same-family pairs are bootstrap hints and resolve
+      to the next documented family
   report_configmap_name:
     default: crdb-version-report
-    description: ConfigMap that must record the active feature version
+    description: Prefix for the report name; cluster/run/stage identity supplies a unique suffix
   report_key:
     default: db_version
     description: ConfigMap key under which the version is recorded
-
 namespace_contract:
-  required_roles: []
-
+  required_roles:
+  - default
 metrics:
-  - time_to_first_mutation
-
+- time_to_first_mutation
 preconditionUnits:
-  - name: crdb_env_ready
-    on_probe_fail: skip
-    probe:
-      # Non-destructive skip-if-running probe. The env PERSISTS across workflow
-      # stages: when a cockroachdb cluster is already serving SQL (inherited from
-      # a prior stage), skip the destructive apply so accumulated state is
-      # preserved. The apply (which deletes+recreates the namespace) runs ONLY on
-      # an empty namespace. NOTE: this case wants a logical-version
-      # v{{params.from_version}} (binary moved to {{params.to_version}}) base; if
-      # chained after a stage that already finalized the upgrade the recorded
-      # version differs — that is a workflow-ordering concern to be curated
-      # separately, NOT something to fix by redeploying and wiping inherited
-      # state.
-      - command: "/bin/sh -c 'flag=--insecure; kubectl -n cockroachdb exec crdb-cluster-0 -- ls /cockroach/cockroach-certs/ca.crt >/dev/null 2>&1 && flag=--certs-dir=/cockroach/cockroach-certs; kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql $flag -e \"SELECT 1;\" 2>/dev/null || kubectl -n cockroachdb get pods 2>/dev/null | grep -q Running'"
-        timeout_sec: 20
-    apply:
-      - command: "/bin/sh -c 'kubectl delete namespace cockroachdb --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/cockroachdb --timeout=400s || true'"
-        timeout_sec: 460
-        sleep: 2
-      - command: "kubectl create namespace cockroachdb"
-        sleep: 1
-      - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/version-check/resource/rbac.yaml"
-        sleep: 2
-      - command: "kubectl -n cockroachdb apply -f cases/cockroachdb/version-check/resource/services.yaml"
-        sleep: 2
-      # Render the StatefulSet image from the from_version param (P18): the
-      # SET cluster.preserve_downgrade_option = '{{params.from_version}}' below
-      # is rejected unless it equals the LIVE active version, so a hardcoded
-      # image tag breaks any from_version override. Whitelist only the variable
-      # NAME in single quotes so envsubst does not erase the in-manifest
-      # $(POD_NAME)/$(POD_NAMESPACE) downward-API refs (P18 sub-trap); copies
-      # cases/cockroachdb/initialize's mechanism.
-      - command: "/bin/sh -c 'envsubst '\\''${BENCH_PARAM_FROM_VERSION}'\\'' < cases/cockroachdb/version-check/resource/statefulset.yaml | kubectl -n cockroachdb apply -f -'"
-        sleep: 5
-      - command: "/bin/sh -c 'for i in $(seq 1 30); do count=$(kubectl -n cockroachdb get pod -l app.kubernetes.io/name=cockroachdb --no-headers 2>/dev/null | wc -l | tr -d \" \"); if [ \"${count}\" -ge 1 ]; then exit 0; fi; sleep 2; done; exit 1'"
-        sleep: 1
-      - command: "kubectl -n cockroachdb wait --for=jsonpath={.status.phase}=Running pod -l app.kubernetes.io/name=cockroachdb --timeout=300s"
-        sleep: 5
-      - command: "/bin/sh -c 'for i in $(seq 1 30); do kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach init --insecure --host=crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local && exit 0; sleep 3; done; exit 1'"
-        sleep: 2
-      - command: "kubectl -n cockroachdb wait --for=condition=ready pod -l app.kubernetes.io/name=cockroachdb --timeout=600s"
-        timeout_sec: 640
-        sleep: 10
-      - command: "kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql --insecure -e \"SET CLUSTER SETTING cluster.preserve_downgrade_option = '{{params.from_version}}';\""
-        sleep: 2
-      - command: "kubectl -n cockroachdb set image sts/crdb-cluster db=cockroachdb/cockroach:v{{params.to_version}}"
-        sleep: 5
-      - command: "/bin/sh -c 'for i in $(seq 1 120); do images=$(kubectl -n cockroachdb get pods -l app.kubernetes.io/name=cockroachdb -o jsonpath=\"{.items[*].spec.containers[0].image}\" 2>/dev/null); total=$(echo \"${images}\" | wc -w | tr -d \" \"); updated=$(echo \"${images}\" | tr \" \" \"\\n\" | grep -c \"cockroachdb/cockroach:v{{params.to_version}}\"); if [ \"${total}\" -eq 3 ] && [ \"${updated}\" -eq 3 ]; then exit 0; fi; sleep 5; done; exit 1'"
-        timeout_sec: 640
-        sleep: 2
-      - command: "kubectl -n cockroachdb wait --for=condition=ready pod -l app.kubernetes.io/name=cockroachdb --timeout=600s"
-        timeout_sec: 640
-        sleep: 10
-    verify:
-      - command: "/bin/sh -c 'flag=--insecure; kubectl -n cockroachdb exec crdb-cluster-0 -- ls /cockroach/cockroach-certs/ca.crt >/dev/null 2>&1 && flag=--certs-dir=/cockroach/cockroach-certs; kubectl -n cockroachdb exec crdb-cluster-0 -- ./cockroach sql $flag -e \"SELECT 1;\" 2>/dev/null || kubectl -n cockroachdb get pods 2>/dev/null | grep -q Running'"
-        timeout_sec: 20
-
+- name: crdb_env_ready
+  on_probe_fail: skip
+  probe:
+  - command: python3 cases/cockroachdb/version-check/scripts/prepare.py environment probe
+    trusted_stdin: stage_key
+    timeout_sec: 300
+  apply:
+  - command: python3 cases/cockroachdb/version-check/scripts/prepare.py environment apply
+    trusted_stdin: stage_key
+    timeout_sec: 1200
+  verify:
+  - command: python3 cases/cockroachdb/version-check/scripts/prepare.py environment verify
+    trusted_stdin: stage_key
+    timeout_sec: 300
+- name: crdb_feature_version_gap_ready
+  on_probe_fail: skip
+  probe:
+  - command: python3 cases/cockroachdb/version-check/scripts/prepare.py gap probe
+    trusted_stdin: stage_key
+    timeout_sec: 300
+  apply:
+  - command: python3 cases/cockroachdb/version-check/scripts/prepare.py gap apply
+    trusted_stdin: stage_key
+    timeout_sec: 2400
+  verify:
+  - command: python3 cases/cockroachdb/version-check/scripts/prepare.py gap verify
+    trusted_stdin: stage_key
+    timeout_sec: 300
+- name: crdb_version_report_absent
+  on_probe_fail: skip
+  probe:
+  - command: python3 cases/cockroachdb/version-check/scripts/prepare.py report probe
+    trusted_stdin: stage_key
+    timeout_sec: 60
+  apply:
+  - command: python3 cases/cockroachdb/version-check/scripts/prepare.py report apply
+    trusted_stdin: stage_key
+    timeout_sec: 60
+  verify:
+  - command: python3 cases/cockroachdb/version-check/scripts/prepare.py report verify
+    trusted_stdin: stage_key
+    timeout_sec: 60
+- name: crdb_version_baseline_ready
+  on_probe_fail: skip
+  probe:
+  - command: python3 cases/cockroachdb/version-check/scripts/prepare.py baseline probe
+    trusted_stdin: stage_key
+    timeout_sec: 300
+  apply:
+  - command: python3 cases/cockroachdb/version-check/scripts/prepare.py baseline apply
+    trusted_stdin: stage_key
+    timeout_sec: 300
+  verify:
+  - command: python3 cases/cockroachdb/version-check/scripts/prepare.py baseline verify
+    trusted_stdin: stage_key
+    timeout_sec: 300
 oracle:
   verify:
     commands:
-      - command: "python3 cases/cockroachdb/version-check/oracle/oracle.py"
-        timeout_sec: 120
+    - command: python3 cases/cockroachdb/version-check/oracle/oracle.py
+      trusted_stdin: stage_key
+      timeout_sec: 300
