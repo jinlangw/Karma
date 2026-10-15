@@ -8,14 +8,14 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from cluster import Cluster, UnsafeState, database_container
 from prepare import Preparation
-from versions import image_version, series, state
+from versions import image_version, parameters, patch_upgrade, series, state
 
 
 def evaluate():
     c = Cluster()
     p = Preparation(c)
-    baseline = p.load()
-    if baseline is None or baseline['data']['phase'] != 'held' or not p.same_task(baseline):
+    baseline = p.load_for_task()
+    if baseline is None or baseline['data']['phase'] != ('prepared' if p.patch else 'held') or not p.same_task(baseline):
         raise RuntimeError('verified source-version and upgrade-hold baseline is missing')
     sts = c.statefulset()
     p.preserved(baseline, sts)
@@ -23,8 +23,11 @@ def evaluate():
         raise UnsafeState('selected namespace identity changed')
     if sts['spec'].get('updateStrategy', {'type': 'RollingUpdate'}) != json.loads(baseline['data']['original_strategy']):
         raise RuntimeError('original update strategy has not been restored')
+    def matches_target(version):
+        return version == p.target if p.patch else series(version) == series(p.target)
+
     desired = database_container(sts['spec']['template'])
-    if series(image_version(desired['image'])) != series(p.target):
+    if not matches_target(image_version(desired['image'])):
         raise RuntimeError('StatefulSet desired image is not on the target release')
     for pod in c.pods(sts):
         actual = database_container({'spec': pod['spec']})
@@ -35,22 +38,30 @@ def evaluate():
         if any(volumes.get(v['metadata']['name']) != f'{v["metadata"]["name"]}-{c.name}-{ordinal}' for v in sts['spec'].get('volumeClaimTemplates', [])):
             raise UnsafeState('an actual selected node changed its selected claim mounts')
     current = state(c)
-    if any(series(version) != series(p.target) for version in current['binaries']):
+    if any(not matches_target(version) for version in current['binaries']):
         raise RuntimeError('not every actual selected node runs the target release')
     target_series = '.'.join(map(str, series(p.target)))
     if current['logical'] != target_series:
         raise RuntimeError('major version upgrade has not finalized to ' + target_series)
     if current['cluster_id'] != baseline['data']['normalized_uuid']:
         raise UnsafeState('prepared database identity changed during the solver task')
-    if c.setting('cluster.preserve_downgrade_option'):
+    if p.patch:
+        if c.setting('cluster.preserve_downgrade_option') != baseline['data']['source_preserve']:
+            raise RuntimeError('patch rollout changed the inherited upgrade hold')
+        policy = baseline['data']['source_auto_upgrade']
+        if policy != '(unavailable)' and c.setting('cluster.auto_upgrade.enabled') != policy:
+            raise RuntimeError('patch rollout changed the inherited automatic-upgrade policy')
+    elif c.setting('cluster.preserve_downgrade_option'):
         raise RuntimeError('preserve_downgrade_option has not been cleared')
     return True
 
 
 if __name__ == '__main__':
     try:
-        Cluster().wait(evaluate, 150)
-        print('Major upgrade finalized on every selected node; identity, storage and security preserved.', flush=True)
+        source, target = parameters()
+        Cluster().wait(evaluate, 70 if patch_upgrade(source, target) else 150)
+        result = 'Patch rollout completed' if patch_upgrade(source, target) else 'Major upgrade finalized'
+        print(result + ' on every selected node; identity, storage and security preserved.', flush=True)
     except (RuntimeError, ValueError, KeyError, OSError, subprocess.TimeoutExpired) as error:
         print(str(error), file=sys.stderr)
         sys.exit(1)
