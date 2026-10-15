@@ -36,6 +36,7 @@ from typing import Any
 from ..transport.k8s.backend import launch_proxy, write_agent_bundle
 from ..environments.registry import get_environment
 from ..oracle import run_oracle
+from ..stage_context import stage_env, freeze_stage
 from ..evidence import collect_evidence
 from .. import protocol
 from ..definitions.cases import load_case_file, normalize_case, discover_case_decoys
@@ -130,7 +131,8 @@ def _do_setup(run_id: str) -> None:
                 s0["_stage_dir"] = stage_dir
 
         param_env = _param_env_vars(case.get("params"))
-        command_env = {**environment.build_namespace_env_vars(role_bindings), **param_env}
+        command_env = {**environment.build_namespace_env_vars(role_bindings), **param_env,
+                       **stage_env(run_dir, _MANUAL_STAGE_ID)}
 
         _update(run_id, {"phase": "precondition"})
         precond_result = _run_operation_units(
@@ -163,6 +165,7 @@ def _do_setup(run_id: str) -> None:
         env_vars = {
             **environment.build_env_vars(role_bindings, proxy_port=proxy_handle.port),
             **param_env,
+            **stage_env(run_dir, _MANUAL_STAGE_ID),
         }
         kubeconfig = write_agent_bundle(
             proxy_handle, run_dir=run_dir, namespace_env_vars=env_vars,
@@ -172,6 +175,7 @@ def _do_setup(run_id: str) -> None:
         prompt = _render_prompt(case, run_dir, ns_roles, env_vars)
         protocol.stage_prompt_path(run_dir, _MANUAL_STAGE_ID).write_text(prompt)
 
+        freeze_stage(run_dir, _MANUAL_STAGE_ID)
         with _lock:
             s = _sessions.get(run_id)
             if s is not None:

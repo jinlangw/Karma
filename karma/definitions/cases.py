@@ -41,6 +41,7 @@ class _CommandItem(BaseModel):
     """A single command entry in a probe, apply, or verify block."""
 
     command: str
+    trusted_stdin: Literal["stage_key"] | None = None
     sleep: int = 0
     namespace_role: str | None = None
     timeout_sec: int | None = None
@@ -176,6 +177,10 @@ def _normalize_command_item(raw: Any) -> dict[str, Any] | None:
     ts = raw.get("timeout_sec") or raw.get("timeoutSec")
     if ts is not None:
         item["timeout_sec"] = _coerce_int(ts, default=60)
+    if raw.get("trusted_stdin") is not None:
+        if raw["trusted_stdin"] != "stage_key":
+            raise RuntimeError("trusted_stdin must be stage_key")
+        item["trusted_stdin"] = "stage_key"
     return item
 
 
