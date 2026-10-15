@@ -17,13 +17,28 @@ def series(version):
     return tuple(map(int, match.group(1, 2)))
 
 
+def release(version):
+    return '.'.join(map(str, series(version)))
+
+
+def source_version(source):
+    return source if source.count('.') == 2 else PINNED[release(source)]
+
+
+def patch_upgrade(source, target):
+    return series(source) == series(target)
+
+
 def parameters():
     source = os.environ.get('BENCH_PARAM_FROM_VERSION', '23.2')
     target = os.environ.get('BENCH_PARAM_TO_VERSION', '24.1.0')
-    if source not in RELEASES[:-1] or not re.fullmatch(r'\d+\.\d+\.\d+', target):
+    if not re.fullmatch(r'\d+\.\d+(?:\.\d+)?', source) or not re.fullmatch(r'\d+\.\d+\.\d+', target) or release(source) not in RELEASES:
         raise UnsafeState('case requires a documented production source and target release')
-    if series(target) != series(RELEASES[RELEASES.index(source) + 1]):
-        raise UnsafeState('source and target must be consecutive supported major releases')
+    if patch_upgrade(source, target):
+        if tuple(map(int, target.split('.'))) < tuple(map(int, source_version(source).split('.'))):
+            raise UnsafeState('upgrade target must not precede the configured source patch')
+    elif release(source) == RELEASES[-1] or series(target) != series(RELEASES[RELEASES.index(release(source)) + 1]):
+        raise UnsafeState('source and target must share a release or be consecutive supported major releases')
     return source, target
 
 
@@ -61,7 +76,11 @@ def state(cluster):
 
 
 def source_ready(cluster):
-    source, _ = parameters()
+    source, target = parameters()
     current = state(cluster)
     desired = image_version(database_container(cluster.statefulset()['spec']['template'])['image'])
-    return current['logical'] == source and len(set(current['binaries'])) == 1 and all(series(v) == series(source) for v in current['binaries']) and current['binaries'][0] == desired
+    exact = source.count('.') == 2 or patch_upgrade(source, target)
+    return (current['logical'] == release(source) and len(set(current['binaries'])) == 1
+            and all(series(v) == series(source) for v in current['binaries'])
+            and current['binaries'][0] == desired
+            and (not exact or desired == source_version(source)))

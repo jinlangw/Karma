@@ -23,12 +23,8 @@ spec:
       serviceAccountName: ${BENCH_PARAM_CLUSTER_NAME}-sa
       containers:
       - name: db
-        # Rendered by envsubst from the from_version param (P18): the cluster
-        # must START on from_version, because the precondition's
-        # `SET cluster.preserve_downgrade_option = '<from_version>'` is rejected
-        # unless it equals the live active version. from_version is major.minor
-        # (preserve_downgrade_option requires that form), so append the .0 patch.
-        image: cockroachdb/cockroach:v${BENCH_PARAM_FROM_VERSION}.0
+        # Bootstrap resolves a release family to .0, or uses an exact source patch.
+        image: cockroachdb/cockroach:v${BENCH_PARAM_FROM_VERSION}
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 26257
