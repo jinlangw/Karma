@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .stage_context import stage_env, trusted_input
 from . import protocol
 
 
@@ -45,6 +46,8 @@ def _run_commands(
             proc = subprocess.run(
                 cmd, shell=True, capture_output=True, text=True,
                 env=env, timeout=cmd_timeout,
+                **({"input": trusted_input(entry, env)}
+                   if entry.get("trusted_stdin") else {}),
             )
             out = proc.stdout + proc.stderr
             output_parts.append(f"$ {cmd}\n{out}")
@@ -245,7 +248,8 @@ def run_oracle(
                     declared += int(_entry.get("timeout_sec") or 0) + int(_entry.get("sleep") or 0)
         effective_timeout = max(_settings.oracle_timeout_sec, declared)
 
-    env = {**os.environ, **role_bindings, **(env_vars or {})}
+    env = {**os.environ, **role_bindings, **stage_env(run_dir, stage_id),
+           **(env_vars or {})}
 
     # Two reasons to re-run a FAIL before trusting it:
     #   * transient apiserver/proxy blip (connectivity signature) -- short backoff;
@@ -315,7 +319,10 @@ def run_regression_sweep(
     results: dict[str, Any] = {}
     for stage_id, oracle_config in stage_oracle_configs:
         role_bindings = role_bindings_map.get(stage_id) or {}
-        env_vars = (env_vars_map or {}).get(stage_id)
+        # The result directory has a regression suffix; the logical audit/key
+        # identity must remain the original stage's identity.
+        env_vars = {**((env_vars_map or {}).get(stage_id) or {}),
+                    **stage_env(run_dir, stage_id)}
         verdict = run_oracle(
             oracle_config,
             role_bindings=role_bindings,
