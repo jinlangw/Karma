@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""One-node, owned live proof for the standalone karma.crdb library.
+"""Owned live proofs for the standalone karma.crdb library.
 
-This harness refuses to pull or build images. It creates a fresh namespace,
-uses one cached CockroachDB image and one 1Gi PVC, proves insecure then TLS
-behavior sequentially, and removes only resources carrying its run label after
-checking their UIDs. It writes safe summaries only; certificate files are held
-in a temporary directory and are never copied to the evidence directory.
+The default mode proves insecure then TLS behavior sequentially. An opt-in
+compatibility mode exercises secure SQL with localhost-only HTTP and ordinary
+HTTPS in separate one-node fixtures. The harness refuses to pull or build
+images and removes only owned resources after checking their UIDs. It writes
+safe summaries only; certificate files are held in a temporary directory and
+are never copied to the evidence directory.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import argparse
 from dataclasses import asdict
 from decimal import Decimal
 from datetime import datetime, timezone
+import csv
 import hashlib
 import json
 import math
@@ -35,6 +37,7 @@ if str(ROOT) not in sys.path:
 from karma.crdb import (  # noqa: E402
     CrdbError,
     CrdbLibrary,
+    HTTPTransport,
     KubectlAdapter,
     Lifecycle,
     ProbeStatus,
@@ -42,6 +45,7 @@ from karma.crdb import (  # noqa: E402
     TLSMode,
     WorkloadRef,
 )
+from karma.crdb.types import UnsupportedLayoutError  # noqa: E402
 
 
 class SmokeFailure(RuntimeError):
@@ -51,13 +55,17 @@ class SmokeFailure(RuntimeError):
 
 
 _SENSITIVE_ASSIGNMENT = re.compile(
-    r"(?i)([\"']?(?:password|passwd|token|secret|api[-_ ]?key|authorization|bearer|credential|private[-_ ]?key)"
+    r"(?i)([\"']?(?:password|passwd|token|secret|cookie|session|api[-_ ]?key|authorization|bearer|credential|private[-_ ]?key)"
     r"[\"']?\s*[:=]\s*)(\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*'|[^\s,;]+)"
 )
 _JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
 _STARTUP_LOG = re.compile(
     r"(?i)(cockroach\s+start|--(?:certs-dir|advertise(?:-sql)?-addr|join|store|sql-addr|listen-addr|http-addr))"
 )
+_LOCALHOST_HTTP_STARTUP_CONFLICT = re.compile(
+    r"(?i)--unencrypted-localhost-http is incompatible with --http-addr=\S+"
+)
+_KUBECTL_API_REASON = re.compile(r"Error from server \(([A-Za-z][A-Za-z0-9]+)\):")
 
 
 def _safe_diagnostic_text(value: Any, *, limit: int = 1200) -> str:
@@ -72,6 +80,9 @@ def _safe_diagnostic_text(value: Any, *, limit: int = 1200) -> str:
     safe_lines: list[str] = []
     in_pem = False
     for line in text.splitlines():
+        if _LOCALHOST_HTTP_STARTUP_CONFLICT.search(line):
+            safe_lines.append("CockroachDB reported incompatible localhost-only HTTP startup flags")
+            continue
         if "-----BEGIN " in line:
             in_pem = True
             safe_lines.append("<REDACTED PEM BLOCK>")
@@ -89,6 +100,12 @@ def _safe_diagnostic_text(value: Any, *, limit: int = 1200) -> str:
         line = _JWT.sub("<REDACTED JWT>", line)
         safe_lines.append(line[:limit])
     return "\n".join(safe_lines)[-limit * 80 :]
+
+
+def _safe_kubectl_api_reason(stderr: str) -> str:
+    """Extract only Kubernetes' bounded reason token, never its response body."""
+    match = _KUBECTL_API_REASON.search(stderr)
+    return match.group(1) if match else "unclassified"
 
 
 def _safe_probe_config(probe: Any) -> dict[str, Any] | None:
@@ -217,6 +234,7 @@ def run(
     timeout: float = 30,
     input_text: str | None = None,
     operation: str | None = None,
+    failure_context: str | None = None,
     observer: Callable[[dict[str, Any]], None] | None = None,
 ) -> str:
     """Run a bounded command without including output or arguments in errors."""
@@ -257,10 +275,16 @@ def run(
         "returncode": result.returncode,
         "elapsed_ms": round((time.monotonic() - started) * 1000),
     }
+    if result.returncode and failure_context:
+        event["failure_context"] = _safe_diagnostic_text(failure_context, limit=160)
+        event["api_reason"] = _safe_kubectl_api_reason(result.stderr)
     if observer:
         observer(event)
     if result.returncode:
-        raise SmokeFailure(f"{operation} returned an error", command_event=event)
+        detail = ""
+        if failure_context:
+            detail = f" in {event['failure_context']} (Kubernetes API reason: {event['api_reason']})"
+        raise SmokeFailure(f"{operation} returned an error{detail}", command_event=event)
     return result.stdout
 
 
@@ -328,7 +352,14 @@ class Fixture:
             "completed_stages": list(self.stage_history),
         }
 
-    def kubectl(self, *argv: str, namespace: str | None = None, timeout: float = 30, input_text: str | None = None) -> str:
+    def kubectl(
+        self,
+        *argv: str,
+        namespace: str | None = None,
+        timeout: float = 30,
+        input_text: str | None = None,
+        diagnose_api_error: bool = False,
+    ) -> str:
         command = list(self.kubectl_base)
         if namespace:
             command += ["--namespace", namespace]
@@ -338,6 +369,7 @@ class Fixture:
             timeout=timeout,
             input_text=input_text,
             operation=self._kubectl_operation(argv),
+            failure_context=f"namespace/{namespace}" if diagnose_api_error and namespace else None,
             observer=self._record_command,
         )
 
@@ -546,23 +578,30 @@ class Fixture:
             },
         }
 
-    def statefulset_manifest(self, tls: bool) -> dict[str, Any]:
+    def statefulset_manifest(
+        self,
+        tls: bool,
+        *,
+        unencrypted_localhost_http: bool = False,
+    ) -> dict[str, Any]:
         cert_arg = "--certs-dir=/cockroach/certs" if tls else "--insecure"
-        script = " ".join(
-            [
-                "exec /cockroach/cockroach start",
-                "--sql-addr=0.0.0.0:26257",
-                "--listen-addr=0.0.0.0:26258",
-                "--http-addr=0.0.0.0:8080",
-                "--advertise-addr=$(POD_NAME).db.$(POD_NAMESPACE).svc.cluster.local:26258",
-                "--advertise-sql-addr=$(POD_NAME).db.$(POD_NAMESPACE).svc.cluster.local:26257",
-                "--join=db-0.db.$(POD_NAMESPACE).svc.cluster.local:26258",
-                "--store=/cockroach/cockroach-data",
-                "--cache=128MiB",
-                "--max-sql-memory=128MiB",
-                cert_arg,
-            ]
-        )
+        http_addr = "localhost:8080" if unencrypted_localhost_http else "0.0.0.0:8080"
+        startup_args = [
+            "exec /cockroach/cockroach start",
+            "--sql-addr=0.0.0.0:26257",
+            "--listen-addr=0.0.0.0:26258",
+            f"--http-addr={http_addr}",
+            "--advertise-addr=$(POD_NAME).db.$(POD_NAMESPACE).svc.cluster.local:26258",
+            "--advertise-sql-addr=$(POD_NAME).db.$(POD_NAMESPACE).svc.cluster.local:26257",
+            "--join=db-0.db.$(POD_NAMESPACE).svc.cluster.local:26258",
+            "--store=/cockroach/cockroach-data",
+            "--cache=128MiB",
+            "--max-sql-memory=128MiB",
+        ]
+        if unencrypted_localhost_http:
+            startup_args.append("--unencrypted-localhost-http")
+        startup_args.append(cert_arg)
+        script = " ".join(startup_args)
         mounts: list[dict[str, Any]] = [{"name": "data", "mountPath": "/cockroach/cockroach-data"}]
         volumes: list[dict[str, Any]] = []
         if tls:
@@ -686,8 +725,11 @@ class Fixture:
         """Delete using Kubernetes DeleteOptions.preconditions.uid."""
         endpoints = {
             "statefulset": f"/apis/apps/v1/namespaces/{self.namespace}/statefulsets/{name}",
+            "pod": f"/api/v1/namespaces/{self.namespace}/pods/{name}",
             "service": f"/api/v1/namespaces/{self.namespace}/services/{name}",
             "secret": f"/api/v1/namespaces/{self.namespace}/secrets/{name}",
+            "configmap": f"/api/v1/namespaces/{self.namespace}/configmaps/{name}",
+            "serviceaccount": f"/api/v1/namespaces/{self.namespace}/serviceaccounts/{name}",
             "persistentvolumeclaim": f"/api/v1/namespaces/{self.namespace}/persistentvolumeclaims/{name}",
             "persistentvolume": f"/api/v1/persistentvolumes/{name}",
             "namespace": f"/api/v1/namespaces/{name}",
@@ -703,7 +745,13 @@ class Fixture:
         if propagation:
             options["propagationPolicy"] = propagation
         command = [*self.kubectl_base, "delete", "--raw=" + endpoint, "--filename=-"]
-        run(command, timeout=30, input_text=json.dumps(options, separators=(",", ":")))
+        run(
+            command,
+            timeout=30,
+            input_text=json.dumps(options, separators=(",", ":")),
+            operation=f"kubectl delete {kind}/{name} with UID precondition",
+            observer=self._record_command,
+        )
 
     def wait_absent(self, kind: str, name: str, *, timeout: float = 180) -> None:
         deadline = time.monotonic() + timeout
@@ -712,6 +760,9 @@ class Fixture:
                 return
             time.sleep(1)
         raise SmokeFailure(f"Owned {kind}/{name} did not disappear within cleanup bound")
+
+    def cleanup_additional_resources(self) -> None:
+        """Hook for fixture-owned resources beyond the common smoke objects."""
 
     def cleanup(self) -> None:
         """Delete in dependency order using exact UID preconditions."""
@@ -780,6 +831,8 @@ class Fixture:
                 else:
                     raise SmokeFailure("Owned PV did not clear within the cleanup bound")
             self._checkpoint("pvc-and-pv-absent")
+
+        self.cleanup_additional_resources()
 
         # Service DNS and TLS material remain available until the database
         # pod and its claim are gone.
@@ -972,7 +1025,7 @@ def preflight(args: argparse.Namespace, fixture: Fixture) -> dict[str, Any]:
     if not any(reference == args.image or reference.endswith("/" + args.image) for reference in references):
         raise SmokeFailure("The requested CockroachDB image is not cached on the pinned Kind node")
 
-    openssl = _openssl_version() if fixture.phase == "tls" else None
+    openssl = _openssl_version() if _phase_is_tls(fixture.phase) else None
 
     storage_classes = fixture.get("storageclasses", all_namespaces=True).get("items", [])
     default_storage = _find_default_storage_class(storage_classes)
@@ -1031,9 +1084,48 @@ def make_certificates(cert_dir: Path, namespace: str) -> None:
          "-CAcreateserial", "-out", str(root_crt), "-days", "2", "-extfile", str(extfile), "-extensions", "root"], timeout=30)
 
 
+def _proof_phase_names(proof_mode: str) -> tuple[str, ...]:
+    if proof_mode == "standard":
+        return ("insecure", "tls")
+    if proof_mode == "http-transport-compatibility":
+        return ("tls-local-http", "tls-https")
+    raise SmokeFailure("Unsupported live proof mode")
+
+
+def _phase_is_tls(name: str) -> bool:
+    return name in {"tls", "tls-local-http", "tls-https"}
+
+
+def _full_health_verdict(library: CrdbLibrary, ref: WorkloadRef) -> dict[str, Any]:
+    """Wait boundedly for the shared full-health contract and return safe facts."""
+    health = library.wait_for_full_health(
+        ref,
+        timeout=90,
+        poll_interval=1,
+        per_node_timeout=5,
+    )
+    if health.status is not ProbeStatus.SATISFIED:
+        raise SmokeFailure("Shared full-health observation did not converge")
+    return {
+        "status": health.status.value,
+        "reasons": list(health.reasons),
+        "attempts": health.attempts,
+        "pod_node_ids": [list(item) for item in health.pod_node_ids],
+        "node_status": [asdict(item) for item in health.node_status],
+        "node_liveness": [asdict(item) for item in health.node_liveness],
+    }
+
+
 def phase(args: argparse.Namespace, name: str, run_id: str, evidence_dir: Path) -> dict[str, Any]:
     fixture = Fixture(args, name, run_id)
-    phase_data: dict[str, Any] = {"phase": name, "tls_mode": "tls" if name == "tls" else "insecure"}
+    tls = _phase_is_tls(name)
+    compatibility_mode = getattr(args, "proof_mode", "standard") == "http-transport-compatibility"
+    localhost_http = name == "tls-local-http"
+    phase_data: dict[str, Any] = {
+        "phase": name,
+        "tls_mode": "tls" if tls else "insecure",
+        "proof_mode": getattr(args, "proof_mode", "standard"),
+    }
     failure: Exception | None = None
     cleanup_failure: Exception | None = None
 
@@ -1066,16 +1158,30 @@ def phase(args: argparse.Namespace, name: str, run_id: str, evidence_dir: Path) 
         fixture.prepare_namespace()
         fixture.set_stage("service-create")
         phase_data["service_uid"] = fixture.create(fixture.service_manifest())["metadata"]["uid"]
-        if name == "tls":
+        if tls:
             with tempfile.TemporaryDirectory(prefix="crdb-library-certs-") as temp:
                 cert_dir = Path(temp)
                 make_certificates(cert_dir, fixture.namespace)
                 fixture.make_secret(cert_dir)
                 fixture.set_stage("statefulset-create")
-                fixture.create(fixture.statefulset_manifest(tls=True))
+                fixture.create(
+                    fixture.statefulset_manifest(
+                        tls=True,
+                        unencrypted_localhost_http=localhost_http,
+                    )
+                )
                 if args.diagnostic_only:
-                    raise SmokeFailure("Diagnostic-only mode supports only the insecure phase")
-                phase_data.update(_exercise_phase(args, fixture, tls=True))
+                    raise SmokeFailure("Diagnostic-only mode does not run TLS fixtures")
+                if compatibility_mode:
+                    phase_data.update(
+                        _exercise_compatibility_phase(
+                            args,
+                            fixture,
+                            http_transport=HTTPTransport.HTTP if localhost_http else HTTPTransport.HTTPS,
+                        )
+                    )
+                else:
+                    phase_data.update(_exercise_phase(args, fixture, tls=True))
         else:
             fixture.set_stage("statefulset-create")
             fixture.create(fixture.statefulset_manifest(tls=False))
@@ -1121,6 +1227,304 @@ def phase(args: argparse.Namespace, name: str, run_id: str, evidence_dir: Path) 
             f"{name} phase failed; inspect {evidence_dir / f'{name}-phase.json'} and its ownership journal"
         ) from (failure or cleanup_failure)
     return phase_data
+
+
+class _PatchCountingAdapter:
+    """Delegate every library operation while counting workload mutations."""
+
+    def __init__(self, adapter: KubectlAdapter):
+        self._adapter = adapter
+        self.patch_calls = 0
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._adapter, name)
+
+    def patch_statefulset_json(self, **kwargs: Any) -> Any:
+        self.patch_calls += 1
+        return self._adapter.patch_statefulset_json(**kwargs)
+
+
+def _sql_identity_from_fixture(fixture: Fixture, *, tls: bool) -> tuple[int, str]:
+    output = _fixture_sql(
+        fixture,
+        tls,
+        "SELECT crdb_internal.cluster_id() AS cluster_id, crdb_internal.node_id() AS node_id",
+    )
+    rows = [row for row in csv.reader(output.splitlines()) if any(cell.strip() for cell in row)]
+    if len(rows) != 2 or [cell.strip().lower() for cell in rows[0]] != ["cluster_id", "node_id"]:
+        raise SmokeFailure("Independent SQL identity query returned an unsupported result")
+    cluster_id, node_id_text = (cell.strip() for cell in rows[1][:2])
+    try:
+        node_id = int(node_id_text)
+    except ValueError as error:
+        raise SmokeFailure("Independent SQL identity query returned an invalid node ID") from error
+    if node_id < 1 or not cluster_id:
+        raise SmokeFailure("Independent SQL identity query returned an incomplete identity")
+    return node_id, cluster_id
+
+
+def _native_auth_scope(workload: Any) -> str:
+    """Bind the adapter's in-memory session cache to observed certificate identity."""
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "certs_dir": workload.certs_dir,
+                "secrets": [
+                    (secret.name, secret.uid, secret.sha256_by_key)
+                    for secret in workload.secrets
+                ],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _assert_native_matches_sql_identity(
+    native_identity: tuple[int, str],
+    sql_identity: tuple[int, str],
+) -> None:
+    if native_identity[0] != sql_identity[0] or native_identity[1].lower() != sql_identity[1].lower():
+        raise SmokeFailure("Native HTTP identity did not match the independent SQL identity")
+
+
+def _pod_uid_map(workload: Any) -> tuple[tuple[str, str], ...]:
+    result = tuple(sorted((pod.name, pod.uid) for pod in workload.pods))
+    if not result or any(not name or not uid for name, uid in result):
+        raise SmokeFailure("Selected Pod identity is incomplete")
+    return result
+
+
+def _witness_digest(output: str) -> tuple[int, str]:
+    rows = [row for row in csv.reader(output.splitlines()) if any(cell.strip() for cell in row)]
+    if len(rows) != 3 or [cell.strip().lower() for cell in rows[0]] != ["id", "payload"]:
+        raise SmokeFailure("Fixture witness query did not return exactly two rows")
+    return len(rows) - 1, hashlib.sha256(output.encode("utf-8")).hexdigest()
+
+
+def _require_probe_preparation_rejected_without_patch(
+    library: CrdbLibrary,
+    ref: WorkloadRef,
+    adapter: _PatchCountingAdapter,
+) -> None:
+    try:
+        library.prepare_health_recovery_probes(ref, timeout=15, poll_interval=0.25, per_node_timeout=5)
+    except UnsupportedLayoutError:
+        pass
+    else:
+        raise SmokeFailure("Loopback-only HTTP unexpectedly accepted a network probe preparation")
+    if adapter.patch_calls != 0:
+        raise SmokeFailure("Rejected loopback probe preparation attempted a StatefulSet patch")
+
+
+def _assert_compatibility_preserved(
+    library: CrdbLibrary,
+    ref: WorkloadRef,
+    fixture: Fixture,
+    *,
+    tls: bool,
+    accepted_before: Any,
+    pod_uids_before: tuple[tuple[str, str], ...],
+    probes_before: dict[str, Any],
+    witness_hash_before: str,
+) -> dict[str, Any]:
+    verified = library.verify_accepted_state(ref, accepted_before, per_node_timeout=5)
+    if verified.status is not ProbeStatus.SATISFIED:
+        raise SmokeFailure("Compatibility phase failed its accepted-state verification")
+    accepted_after = library.capture_accepted_state(ref, per_node_timeout=5)
+    if accepted_after != accepted_before:
+        raise SmokeFailure("Compatibility phase changed the captured accepted state")
+    workload_after = library.inspect(ref)
+    pod_uids_after = _pod_uid_map(workload_after)
+    if pod_uids_after != pod_uids_before:
+        raise SmokeFailure("Compatibility phase changed selected Pod UIDs")
+    probes_after = {
+        "liveness": _safe_probe_observation(workload_after.liveness_probe),
+        "readiness": _safe_probe_observation(workload_after.readiness_probe),
+    }
+    if probes_after != probes_before:
+        raise SmokeFailure("Compatibility phase changed the inherited Kubernetes probe configuration")
+    rows_after, witness_hash_after = _witness_digest(
+        _fixture_sql(
+            fixture,
+            tls,
+            "SELECT id, payload FROM crdb_common_library_smoke.public.witness ORDER BY id",
+        )
+    )
+    if rows_after != 2 or witness_hash_after != witness_hash_before:
+        raise SmokeFailure("Compatibility phase changed fixture witness data")
+    return {
+        "accepted_state_verified": True,
+        "pod_uids_before_after": [pod_uids_before, pod_uids_after],
+        "probes_before_after": [probes_before, probes_after],
+        "witness_rows": rows_after,
+        "witness_sha256_before_after": [witness_hash_before, witness_hash_after],
+        "cluster_id": accepted_after.cluster_id,
+        "node_ids": accepted_after.node_ids,
+        "sql_versions": accepted_after.sql_versions,
+        "image": accepted_after.image,
+        "desired_replicas": accepted_after.desired_replicas,
+        "pvc_identities": accepted_after.pvc_identities,
+        "certificate_fingerprints": accepted_after.certificate_fingerprints,
+        "service_routing": accepted_after.service_routing,
+        "workload_spec_hash": accepted_after.workload_spec_hash,
+    }
+
+
+def _exercise_compatibility_phase(
+    args: argparse.Namespace,
+    fixture: Fixture,
+    *,
+    http_transport: HTTPTransport,
+) -> dict[str, Any]:
+    """Exercise HTTP/SQL TLS separation and the actual native HTTP adapter."""
+    tls = True
+    fixture.wait_ready(timeout=args.ready_timeout)
+    ref = WorkloadRef(fixture.namespace, "db", "db")
+    adapter = _PatchCountingAdapter(KubectlAdapter(kubectl=args.kubectl, context=args.context))
+    library = CrdbLibrary(adapter)
+
+    fixture.set_stage("pre-init-deployed-probe")
+    before_init = library.probe(
+        ref,
+        Requirement(Lifecycle.DEPLOYED, minimum_nodes=1, tls_mode=TLSMode.TLS),
+        per_node_timeout=5,
+    )
+    if before_init.status is not ProbeStatus.SATISFIED or before_init.health.lifecycle is not Lifecycle.DEPLOYED:
+        raise SmokeFailure("Pre-initialization TLS readiness did not match the deployed requirement")
+
+    fixture.init(tls=True)
+    fixture.set_stage("initialized-semantic-reconcile")
+    initialized = library.reconcile(
+        ref,
+        Requirement(Lifecycle.INITIALIZED, minimum_nodes=1, tls_mode=TLSMode.TLS),
+        timeout=120,
+        poll_interval=1,
+        per_node_timeout=5,
+    )
+    if initialized.assessment.status is not ProbeStatus.SATISFIED:
+        raise SmokeFailure("Initialized semantic readiness did not converge")
+
+    fixture.set_stage("initialized-full-health")
+    full_health = _full_health_verdict(library, ref)
+
+    fixture.set_stage("witness-data-write")
+    _fixture_sql(fixture, tls, "CREATE DATABASE crdb_common_library_smoke")
+    _fixture_sql(
+        fixture,
+        tls,
+        "CREATE TABLE crdb_common_library_smoke.public.witness (id INT PRIMARY KEY, payload STRING NOT NULL)",
+    )
+    _fixture_sql(
+        fixture,
+        tls,
+        "INSERT INTO crdb_common_library_smoke.public.witness VALUES "
+        "(1, 'preserve-through-transport-check'), (2, 'fixture-row-two')",
+    )
+    witness_rows, witness_hash = _witness_digest(
+        _fixture_sql(
+            fixture,
+            tls,
+            "SELECT id, payload FROM crdb_common_library_smoke.public.witness ORDER BY id",
+        )
+    )
+    if witness_rows != 2:
+        raise SmokeFailure("Fixture witness setup did not create exactly two rows")
+
+    fixture.set_stage("compatibility-semantic-probe")
+    assessment = library.probe(
+        ref,
+        Requirement(Lifecycle.INITIALIZED, minimum_nodes=1, tls_mode=TLSMode.TLS),
+        per_node_timeout=5,
+    )
+    if assessment.status is not ProbeStatus.SATISFIED:
+        raise SmokeFailure("Shared semantic readiness failed for the transport compatibility fixture")
+    workload = assessment.workload
+    if workload.http_transport is not http_transport:
+        raise SmokeFailure("Observed HTTP transport did not match the compatibility fixture mode")
+    if workload.http_bind_host != ("localhost" if http_transport is HTTPTransport.HTTP else "0.0.0.0"):
+        raise SmokeFailure("Observed HTTP bind address did not match the compatibility fixture mode")
+    health = library.probe_health_endpoint(ref, path="/health", per_node_timeout=5)
+    ready = library.probe_health_endpoint(ref, path="/health?ready=1", per_node_timeout=5)
+    if not all(row[2] for row in (*health, *ready)):
+        raise SmokeFailure("Observed HTTP health endpoints did not pass in the selected transport mode")
+
+    accepted_before = library.capture_accepted_state(ref, per_node_timeout=5)
+    pod_uids_before = _pod_uid_map(workload)
+    probes_before = {
+        "liveness": _safe_probe_observation(workload.liveness_probe),
+        "readiness": _safe_probe_observation(workload.readiness_probe),
+    }
+    if (
+        workload.liveness_probe is None
+        or workload.readiness_probe is None
+        or workload.liveness_probe.handler != "tcpSocket"
+        or workload.readiness_probe.handler != "tcpSocket"
+    ):
+        raise SmokeFailure("Compatibility fixture did not retain both TCP Kubernetes probes")
+    sql_identity = _sql_identity_from_fixture(fixture, tls=tls)
+    if len(workload.pods) != 1:
+        raise SmokeFailure("Compatibility proof requires the reviewed one-node fixture")
+    pod = workload.pods[0]
+    if workload.http_port is None or pod.sql_host is None:
+        raise SmokeFailure("Observed endpoints are incomplete for native HTTP identity")
+    native_identity = adapter.native_identity(
+        namespace=workload.namespace,
+        pod_name=pod.name,
+        pod_uid=pod.uid,
+        container_name=workload.container_name,
+        binary=workload.sql_binary,
+        sql_host=pod.sql_host,
+        sql_port=workload.sql_port,
+        tls_mode=workload.tls_mode.value,
+        certs_dir=workload.certs_dir,
+        http_port=workload.http_port,
+        http_transport=workload.http_transport.value,
+        client_cert_available=workload.tls_mode is TLSMode.TLS,
+        auth_scope=_native_auth_scope(workload),
+        timeout=8,
+    )
+    _assert_native_matches_sql_identity(native_identity, sql_identity)
+
+    if http_transport is HTTPTransport.HTTP:
+        fixture.set_stage("loopback-probe-preparation-rejection")
+        _require_probe_preparation_rejected_without_patch(library, ref, adapter)
+    if adapter.patch_calls != 0:
+        raise SmokeFailure("Read-only compatibility phase attempted a StatefulSet patch")
+
+    fixture.set_stage("compatibility-preservation-check")
+    preservation = _assert_compatibility_preserved(
+        library,
+        ref,
+        fixture,
+        tls=tls,
+        accepted_before=accepted_before,
+        pod_uids_before=pod_uids_before,
+        probes_before=probes_before,
+        witness_hash_before=witness_hash,
+    )
+    return {
+        "tls_mode": assessment.workload.tls_mode.value,
+        "http_transport": workload.http_transport.value,
+        "http_bind_host": workload.http_bind_host,
+        "preinit_lifecycle": before_init.health.lifecycle.value,
+        "initialized_lifecycle": initialized.assessment.health.lifecycle.value,
+        "full_health": full_health,
+        "library_identity_route": "fixed SQL identity on observed CockroachDB v24.1.0",
+        "independent_sql_identity": sql_identity,
+        "native_http_identity": native_identity,
+        "native_http_identity_matches_sql": True,
+        "http_health_statuses": {"health": health, "ready": ready},
+        "network_probe_preparation_attempted": http_transport is HTTPTransport.HTTP,
+        "network_probe_patch_calls": adapter.patch_calls,
+        "witness_rows_before": witness_rows,
+        "witness_sha256_before": witness_hash,
+        "preservation": preservation,
+        "auth_session_side_effect": (
+            "secure SQL auth-session login created a short-lived system.web_sessions row; "
+            "the cookie stayed in process memory and was not written to evidence"
+        ),
+    }
 
 
 def _exercise_phase(args: argparse.Namespace, fixture: Fixture, *, tls: bool) -> dict[str, Any]:
@@ -1358,6 +1762,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--image", default="cockroachdb/cockroach:v24.1.0")
     parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument(
+        "--proof-mode",
+        choices=("standard", "http-transport-compatibility"),
+        default="standard",
+        help="opt into a focused secure-SQL/HTTP-transport compatibility proof",
+    )
+    parser.add_argument(
         "--diagnostic-only",
         action="store_true",
         help="run one insecure pre-Ready/Ready semantic diagnostic; do not initialize or mutate CockroachDB",
@@ -1365,6 +1775,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--ready-timeout", type=float, default=240.0)
     parser.add_argument("--running-observation-timeout", type=float, default=8.0)
     args = parser.parse_args(argv)
+    if args.diagnostic_only and args.proof_mode != "standard":
+        raise SmokeFailure("Diagnostic-only mode supports only the standard proof mode")
     if not math.isfinite(args.ready_timeout) or args.ready_timeout <= 0:
         raise SmokeFailure("Ready timeout must be finite and positive")
     if not math.isfinite(args.running_observation_timeout) or args.running_observation_timeout < 0:
@@ -1380,15 +1792,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     evidence_dir.mkdir(parents=True, exist_ok=False)
     purpose = "live diagnostic" if args.diagnostic_only else "live proof"
     print(f"Starting bounded CockroachDB {purpose}; run id {run_id}", flush=True)
-    insecure = phase(args, "insecure", run_id, evidence_dir)
+    phase_names = ("insecure",) if args.diagnostic_only else _proof_phase_names(args.proof_mode)
+    results = []
+    for phase_name in phase_names:
+        result = phase(args, phase_name, run_id, evidence_dir)
+        results.append(result)
+        label = "diagnostic" if args.diagnostic_only else "phase"
+        print(f"{phase_name} {label} complete and cleaned: {result['namespace']}", flush=True)
+        if args.diagnostic_only:
+            return 0
     if args.diagnostic_only:
-        print(f"Insecure diagnostic complete and cleaned: {insecure['namespace']}", flush=True)
         return 0
-    print(f"Insecure phase complete and cleaned: {insecure['namespace']}", flush=True)
-    secure = phase(args, "tls", run_id, evidence_dir)
-    print(f"TLS phase complete and cleaned: {secure['namespace']}", flush=True)
     (evidence_dir / "live-summary.json").write_text(
-        json.dumps({"run_id": run_id, "phases": [insecure, secure]}, indent=2, sort_keys=True) + "\n",
+        json.dumps({"run_id": run_id, "proof_mode": args.proof_mode, "phases": results}, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     print(f"Live proof passed; safe evidence at {evidence_dir}", flush=True)

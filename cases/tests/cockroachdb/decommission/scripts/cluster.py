@@ -21,6 +21,8 @@ import time
 
 import yaml
 
+from karma.crdb.connections import select_sql_readiness_flag
+
 
 class Cluster:
     def __init__(self):
@@ -80,12 +82,12 @@ class Cluster:
 
     def connection_flag(self):
         if self.flag is None:
-            for flag in ("--certs-dir=/cockroach/cockroach-certs", "--insecure"):
-                if self.sql_result("SELECT 1;", flag=flag, timeout=10).returncode == 0:
-                    self.flag = flag
-                    break
-            if self.flag is None:
-                raise RuntimeError("selected cluster is not SQL-ready in TLS or insecure mode")
+            candidates = ("--certs-dir=/cockroach/cockroach-certs", "--insecure")
+            self.flag = select_sql_readiness_flag(
+                candidates,
+                lambda query, flag: self.sql_result(query, flag=flag, timeout=10),
+                unavailable_message="selected cluster is not SQL-ready in TLS or insecure mode",
+            )
         return self.flag
 
     def sql(self, query, ordinal=0, timeout=30):

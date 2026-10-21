@@ -228,13 +228,15 @@ class Cluster:
         for probe in health_probes(container):
             self.require(self.health_request(pod, probe))
 
-    def wait(self, check, seconds):
+    def wait(self, check, seconds, *, propagate=()):
         deadline = time.monotonic() + seconds
         last = "not ready"
         while time.monotonic() < deadline:
             try:
                 if check():
                     return
+            except propagate:
+                raise
             except (RuntimeError, ValueError) as error:
                 if isinstance(error, UnsafeState):
                     raise
@@ -309,7 +311,16 @@ class Cluster:
         self.wait(initialize, 300)
         self.wait(self.ready, 300)
 
-    def recover(self):
+    def recover(self, readiness_check=None, propagate=()):
+        """Restore the original data-preserving health recovery policy.
+
+        Missing Services are recreated from the case manifest, then readiness
+        is given the original grace period. If the selected workload remains
+        unhealthy, only Running, unready Pods are restarted after verifying
+        their stores are PVC-backed. ``readiness_check`` lets the shared CRDB
+        observer participate in those same bounded checks without changing
+        the case's repair policy.
+        """
         if self.get("statefulset", self.name) is None:
             self.bootstrap()
             return
@@ -320,9 +331,15 @@ class Cluster:
                 if not service["spec"]["selector"]:
                     raise UnsafeState("cannot infer missing Service selector")
                 self.create(service)
+
+        def ready():
+            return readiness_check() if readiness_check is not None else self.ready()
+
         try:
-            self.wait(self.ready, 20)
+            self.wait(ready, 20, propagate=propagate)
             return
+        except propagate:
+            raise
         except UnsafeState:
             raise
         except RuntimeError:
@@ -333,4 +350,4 @@ class Cluster:
                 self.delete_pod(pod)
                 self.wait(lambda: self.get("pod", pod["metadata"]["name"]) is not None, 120)
         self.flag = None
-        self.wait(self.ready, 180)
+        self.wait(ready, 180, propagate=propagate)

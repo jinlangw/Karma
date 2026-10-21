@@ -37,6 +37,89 @@ def run(cmd, timeout=30):
         )
 
 
+def _observed_tls_sql_result():
+    """Retry secure SQL using the selected live Pod's observed connection.
+
+    The common library is loaded only after the legacy Oracle command fails.
+    This keeps the existing standalone Oracle path and its first SQL attempt
+    unchanged. The retry remains TLS-only; it never treats a connection error
+    as permission to use insecure SQL.
+    """
+    try:
+        from karma.crdb import CrdbError, CrdbLibrary, KubectlAdapter, TLSMode, WorkloadRef
+        from karma.crdb.connections import select_sql_readiness_flag
+    except ImportError:
+        return None
+
+    try:
+        library = CrdbLibrary(KubectlAdapter(kubectl="kubectl", get_timeout=1.0))
+        connection = library.inspect_sql_connection(WorkloadRef(NAMESPACE, CLUSTER_NAME), ordinal=0)
+    except (CrdbError, OSError):
+        return None
+
+    if (
+        connection.namespace != NAMESPACE
+        or connection.workload_name != CLUSTER_NAME
+        or connection.pod_name != NODE_NAME
+        or connection.tls_mode != TLSMode.TLS
+    ):
+        return None
+
+    cert_directories = ["/cockroach/cockroach-certs"]
+    if connection.certs_dir and connection.certs_dir not in cert_directories:
+        cert_directories.append(connection.certs_dir)
+    candidates = [f"--certs-dir={cert_dir}" for cert_dir in cert_directories]
+
+    successful_result = None
+
+    def query(sql, certs_flag):
+        nonlocal successful_result
+        command = [
+            "kubectl", "-n", NAMESPACE, "exec", connection.pod_name,
+            "--container", connection.container_name, "--",
+            connection.sql_binary, "sql", certs_flag,
+            f"--host={connection.sql_host}", f"--port={connection.sql_port}",
+            "-e", sql,
+        ]
+        result = run(command, timeout=15)
+        if result.returncode == 0:
+            successful_result = result
+        return result
+
+    try:
+        select_sql_readiness_flag(
+            candidates,
+            query,
+            unavailable_message="Observed secure SQL connection failed",
+        )
+    except (CrdbError, RuntimeError, OSError):
+        return None
+    return successful_result
+
+
+def secure_sql_result():
+    """Run the original SQL check first, with an observed TLS-only retry."""
+    secure_cmd = [
+        "kubectl",
+        "-n",
+        NAMESPACE,
+        "exec",
+        NODE_NAME,
+        "--",
+        "./cockroach",
+        "sql",
+        "--certs-dir=/cockroach/cockroach-certs",
+        "-e",
+        "SELECT 1;",
+    ]
+    result = run(secure_cmd)
+    if result.returncode != 0:
+        observed_result = _observed_tls_sql_result()
+        if observed_result is not None:
+            return observed_result
+    return result
+
+
 def served_leaf_fingerprint(node_name):
     """SHA-256 fingerprint of a target cluster node's served leaf cert (O37).
 
@@ -98,20 +181,7 @@ def main():
         print("Certificate rotation verification failed: BENCH_NAMESPACE is not set", file=sys.stderr)
         return 1
 
-    secure_cmd = [
-        "kubectl",
-        "-n",
-        NAMESPACE,
-        "exec",
-        NODE_NAME,
-        "--",
-        "./cockroach",
-        "sql",
-        "--certs-dir=/cockroach/cockroach-certs",
-        "-e",
-        "SELECT 1;",
-    ]
-    secure_result = run(secure_cmd)
+    secure_result = secure_sql_result()
     if secure_result.returncode != 0:
         errors.append("TLS connection failed after certificate rotation")
         errors.append(f"Error: {secure_result.stderr.strip()}")

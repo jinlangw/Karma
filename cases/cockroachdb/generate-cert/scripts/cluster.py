@@ -1,16 +1,22 @@
 """Selected database operations; readiness never grants permission to erase data."""
-import copy
 import csv
 import io
 import json
 import os
 from pathlib import Path
 import re
-import shlex
 import subprocess
 import time
 
 import yaml
+
+from karma.crdb.connections import select_sql_readiness_flag
+from karma.crdb.security import (
+    _generate_cert_certificate_directory,
+    _generate_cert_database_container,
+    _generate_cert_server_arguments,
+    insecure_template as _insecure_template,
+)
 
 CERT_DIR = "/cockroach/cockroach-certs"
 TOOLBOX = "openssl-toolbox"
@@ -22,103 +28,19 @@ class UnsafeState(RuntimeError):
 
 
 def database_container(template):
-    containers = [c for c in template["spec"]["containers"]
-                  if "cockroach" in (c.get("image", "") + " ".join(c.get("command", []) + c.get("args", [])))
-                  and re.search(r"\bstart(?:-single-node)?\b", " ".join(c.get("command", []) + c.get("args", [])))]
-    if len(containers) != 1:
-        raise UnsafeState("cannot identify exactly one CockroachDB server container")
-    return containers[0]
+    return _generate_cert_database_container(template, error_type=UnsafeState)
 
 
 def server_arguments(container):
-    command = container.get("command", [])
-    if len(command) == 3 and command[0] in ("/bin/bash", "/bin/sh", "bash", "sh") and command[1] in ("-c", "-ec"):
-        tokens = shlex.split(command[2])
-        syntax = shlex.shlex(command[2], posix=True, punctuation_chars=";&|<>")
-        syntax.whitespace_split = True
-        if any(re.fullmatch(r"[;&|<>]+", token) for token in syntax):
-            raise UnsafeState("compound server startup requires explicit security-mode configuration")
-        return tokens + container.get("args", [])
-    return command + container.get("args", [])
+    return _generate_cert_server_arguments(container, error_type=UnsafeState)
 
 
 def certificate_directory(container):
-    tokens = server_arguments(container)
-    for index, token in enumerate(tokens):
-        if token.startswith("--certs-dir="):
-            return token.split("=", 1)[1]
-        if token == "--certs-dir" and index + 1 < len(tokens):
-            return tokens[index + 1]
-    return CERT_DIR
+    return _generate_cert_certificate_directory(container, error_type=UnsafeState)
 
 
 def insecure_template(template, secret_names):
-    """Change only server security flags, certificate mounts, and HTTP probes."""
-    updated = copy.deepcopy(template)
-    container = database_container(updated)
-    directory = certificate_directory(container)
-    def strip(tokens):
-        result = []
-        index = 0
-        while index < len(tokens):
-            token = tokens[index]
-            if token in ("--certs-dir", "--accept-sql-without-tls"):
-                index += 2 if token == "--certs-dir" else 1
-                continue
-            if token == "--insecure" or token.startswith(("--certs-dir=", "--insecure=", "--accept-sql-without-tls=")):
-                index += 1
-                continue
-            result.append(token)
-            index += 1
-        return result
-    command = container.get("command", [])
-    arguments = server_arguments(container)
-    change_flags = not any(t in ("--insecure", "--insecure=true") for t in arguments) or any(
-        t == "--certs-dir" or t.startswith(("--certs-dir=", "--accept-sql-without-tls")) for t in arguments)
-    if not change_flags:
-        pass
-    elif len(command) == 3 and command[0] in ("/bin/bash", "/bin/sh", "bash", "sh") and command[1] in ("-c", "-ec"):
-        body = command[2]
-        # Preserve quoting and expansion of every unrelated startup argument.
-        body = re.sub(r"(?<!\S)--certs-dir(?:=\S+|\s+\S+)(?=\s|$)", "", body)
-        body = re.sub(r"(?<!\S)--(?:insecure|accept-sql-without-tls)(?:=\S+)?(?=\s|$)", "", body)
-        wanted = strip(shlex.split(command[2]))
-        if shlex.split(body) != wanted:
-            raise UnsafeState("cannot safely edit quoted security arguments")
-        container["command"][2] = body.rstrip() + " --insecure"
-        if "args" in container:
-            container["args"] = strip(container["args"])
-    else:
-        if "command" in container:
-            container["command"] = strip(container["command"])
-        if "args" in container:
-            container["args"] = strip(container["args"]) + ["--insecure"]
-        else:
-            container["command"] = strip(container.get("command", [])) + ["--insecure"]
-    def refs(volume):
-        return {volume["secret"]["secretName"]} if "secret" in volume else {
-            source["secret"]["name"] for source in volume.get("projected", {}).get("sources", []) if "secret" in source}
-    removed = {volume["name"] for volume in updated["spec"].get("volumes", []) if refs(volume) & secret_names}
-    removed |= {mount["name"] for mount in container.get("volumeMounts", []) if mount["mountPath"] in (directory, CERT_DIR)}
-    for volume in updated["spec"].get("volumes", []):
-        if volume["name"] in removed and (not refs(volume) or refs(volume) - secret_names or any(
-            "secret" not in source for source in volume.get("projected", {}).get("sources", []))):
-            raise UnsafeState("certificate volume includes unrelated sources or non-Secret storage")
-    # A shared volume used at an unrelated path cannot be removed implicitly.
-    for other in updated["spec"].get("containers", []) + updated["spec"].get("initContainers", []):
-        if other is not container and any(m["name"] in removed for m in other.get("volumeMounts", [])):
-            raise UnsafeState("another container uses the database certificate volume")
-    if "volumeMounts" in container:
-        container["volumeMounts"] = [m for m in container["volumeMounts"] if m["name"] not in removed]
-    if "volumes" in updated["spec"]:
-        updated["spec"]["volumes"] = [v for v in updated["spec"]["volumes"] if v["name"] not in removed]
-    for key in ("livenessProbe", "readinessProbe", "startupProbe"):
-        probe = container.get(key, {})
-        if "httpGet" in probe and probe["httpGet"].get("scheme") == "HTTPS":
-            probe["httpGet"]["scheme"] = "HTTP"
-        if "exec" in probe and any("--certs-dir" in arg for arg in probe["exec"]["command"]):
-            raise UnsafeState("certificate-based exec health probe requires explicit mode conversion")
-    return updated
+    return _insecure_template(template, secret_names, error_type=UnsafeState)
 
 
 class Cluster:
@@ -207,12 +129,12 @@ class Cluster:
     def connection_flag(self):
         if self.flag is None:
             directory = certificate_directory(database_container(self.statefulset()["spec"]["template"]))
-            for flag in dict.fromkeys(("--certs-dir=" + directory, "--certs-dir=" + CERT_DIR, "--insecure")):
-                if self.sql("SELECT 1;", flag=flag).returncode == 0:
-                    self.flag = flag
-                    break
-            if self.flag is None:
-                raise RuntimeError("selected database has no working TLS or insecure SQL connection")
+            candidates = dict.fromkeys(("--certs-dir=" + directory, "--certs-dir=" + CERT_DIR, "--insecure"))
+            self.flag = select_sql_readiness_flag(
+                candidates,
+                lambda query, flag: self.sql(query, flag=flag),
+                unavailable_message="selected database has no working TLS or insecure SQL connection",
+            )
         return self.flag
 
     def cluster_id(self):

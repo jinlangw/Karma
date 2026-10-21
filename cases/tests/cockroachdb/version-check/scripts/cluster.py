@@ -3,15 +3,30 @@ import csv
 import io
 import json
 import os
-import posixpath
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
-import shlex
 import subprocess
 import time
 from urllib.parse import urlencode
 
 import yaml
+
+from karma.crdb import CrdbLibrary, KubectlAdapter, ProbeStatus, WorkloadRef
+from karma.crdb.health import observe_initialization_state
+from karma.crdb.storage import pvc_store_mappings
+from karma.crdb.types import (
+    AuthenticationError,
+    KubernetesAccessError,
+    StaleIdentityError,
+    UnsupportedLayoutError,
+)
+from karma.crdb.startup import (
+    arguments as _startup_arguments,
+    certificate_directory as _startup_certificate_directory,
+    client_connection_flags as _startup_client_connection_flags,
+    database_container as _startup_database_container,
+    flag_value as _startup_flag_value,
+)
 
 
 class UnsafeState(RuntimeError):
@@ -19,38 +34,19 @@ class UnsafeState(RuntimeError):
 
 
 def database_container(template):
-    candidates = [c for c in template['spec']['containers']
-                  if 'cockroach' in (c.get('image', '') + ' '.join(c.get('command', []) + c.get('args', [])))
-                  and re.search(r'\bstart\b', ' '.join(c.get('command', []) + c.get('args', [])))]
-    if len(candidates) != 1:
-        raise UnsafeState('expected exactly one multi-node CockroachDB server container')
-    return candidates[0]
+    return _startup_database_container(template, error_type=UnsafeState)
 
 
 def arguments(container):
-    command = container.get('command', [])
-    if len(command) == 3 and command[0] in ('/bin/bash', '/bin/sh', 'bash', 'sh') and command[1] in ('-c', '-ec'):
-        lexer = shlex.shlex(command[2], posix=True, punctuation_chars=';&|<>')
-        lexer.whitespace_split = True
-        if any(re.fullmatch(r'[;&|<>]+', token) for token in lexer):
-            raise UnsafeState('compound server startup is unsupported')
-        command = shlex.split(command[2])
-    if not any(token == 'start' for token in command + container.get('args', [])):
-        raise UnsafeState('multi-node cockroach start command is required')
-    return command + container.get('args', [])
+    return _startup_arguments(container, error_type=UnsafeState)
 
 
 def flag_value(container, name, default=None):
-    tokens = arguments(container)
-    values = [t.split('=', 1)[1] for t in tokens if t.startswith(name + '=')]
-    values += [tokens[i + 1] for i, t in enumerate(tokens[:-1]) if t == name]
-    if len(values) > 1:
-        raise UnsafeState('ambiguous startup flag: ' + name)
-    return values[0] if values else default
+    return _startup_flag_value(container, name, default, error_type=UnsafeState)
 
 
 class Cluster:
-    def __init__(self):
+    def __init__(self, library=None):
         self.namespace = os.environ['BENCH_NAMESPACE']
         self.name = os.environ.get('BENCH_PARAM_CLUSTER_NAME', 'crdb-cluster')
         for value in (self.namespace, self.name):
@@ -59,6 +55,7 @@ class Cluster:
         if len(self.name) > 40:
             raise ValueError('cluster_name must leave room for fixture resource suffixes')
         self.labels = {'app.kubernetes.io/name': 'cockroachdb', 'app.kubernetes.io/instance': self.name}
+        self.crdb_library = library if library is not None else CrdbLibrary(KubectlAdapter())
 
     def kubectl(self, *args, timeout=20, input_text=None, namespace=None):
         ns = self.namespace if namespace is None else namespace
@@ -113,32 +110,20 @@ class Cluster:
 
     def connection_flags(self, container=None):
         container = container or database_container(self.statefulset()['spec']['template'])
-        tokens = arguments(container)
-        insecure = '--insecure' in tokens or '--insecure=true' in tokens
-        flags = ['--insecure'] if insecure else ['--certs-dir=' + self.certificate_directory(container)]
-        name = flag_value(container, '--cluster-name')
-        return flags + (['--cluster-name=' + name] if name else [])
+        return _startup_client_connection_flags(
+            container,
+            certificate_directory=lambda: self.certificate_directory(container),
+            error_type=UnsafeState,
+        )
 
     def certificate_directory(self, container):
         directory = flag_value(container, '--certs-dir')
-        if directory is None:
-            homes = [env for env in container.get('env', []) if env['name'] == 'HOME']
-            if len(homes) > 1 or homes and ('value' not in homes[0] or not homes[0]['value'].startswith('/')):
-                raise UnsafeState('implicit TLS certificate path requires a literal absolute HOME')
-            if homes:
-                home = homes[0]['value']
-            else:
-                pod_context = self.statefulset()['spec']['template']['spec'].get('securityContext', {})
-                user = container.get('securityContext', {}).get('runAsUser', pod_context.get('runAsUser', 0))
-                if container.get('envFrom') or user != 0:
-                    raise UnsafeState('implicit TLS certificate path needs literal HOME or explicit certs-dir for this startup')
-                # Every supported official image defaults to root. The native
-                # CLI resolves its default as HOME/.cockroach-certs.
-                home = '/root'
-            directory = home.rstrip('/') + '/.cockroach-certs'
-        if not directory.startswith('/'):
-            directory = (container.get('workingDir') or '/cockroach').rstrip('/') + '/' + directory
-        return posixpath.normpath(directory)
+        return _startup_certificate_directory(
+            container,
+            directory,
+            pod_security_context=lambda: self.statefulset()['spec']['template']['spec'].get('securityContext', {}),
+            error_type=UnsafeState,
+        )
 
     def host(self, ordinal, sts=None):
         sts = sts or self.statefulset()
@@ -295,50 +280,38 @@ class Cluster:
         for pod in self.pods(sts):
             if not any(c.get('type') == 'Ready' and c.get('status') == 'True' for c in pod['status'].get('conditions', [])):
                 raise RuntimeError('selected database pod is not Ready')
-        active = [row for row in self.node_rows() if row.get('membership') != 'decommissioned']
-        if len(active) != int(sts['spec']['replicas']):
-            raise RuntimeError('selected database has unexpected active or dead node records')
-        ids = [self.node_id(i) for i in range(int(sts['spec']['replicas']))]
-        if len(set(ids)) != len(ids) or set(ids) != {row['id'] for row in active}:
-            raise RuntimeError('selected SQL gateways do not identify exactly the active selected nodes')
-        live = [row for row in self.liveness_rows() if row.get('membership') != 'decommissioned']
-        if len(live) != len(ids) or {row.get('node_id') for row in live} != set(ids):
-            raise RuntimeError('fresh database liveness has unexpected active or dead node records')
-        for row in live:
-            if row.get('membership') != 'active' or row.get('draining', '').lower() not in ('false', 'f'):
-                raise RuntimeError('fresh database liveness has incomplete decommissioning or draining nodes')
-            if row.get('is_live', '').lower() not in ('true', 't'):
-                raise RuntimeError('selected database has an expired live-node heartbeat')
-        for row in active:
-            if row.get('membership') not in ('active', None) or row.get('is_draining', 'false').lower() != 'false':
-                raise RuntimeError('selected database has incomplete decommissioning or draining nodes')
-            if row.get('is_available', '').lower() != 'true':
-                raise RuntimeError('selected database has an unavailable node')
-            for key in ('ranges_unavailable', 'ranges_underreplicated'):
-                if key not in row or int(row[key]) != 0:
-                    raise RuntimeError('selected database has unavailable or under-replicated ranges')
+        selected_uid = sts['metadata']['uid']
+        try:
+            result = self.crdb_library.probe_full_health(
+                WorkloadRef(self.namespace, self.name),
+                per_node_timeout=5,
+            )
+        except (AuthenticationError, KubernetesAccessError, StaleIdentityError, UnsupportedLayoutError) as error:
+            # These failures describe access or an unsupported observation
+            # contract, not evidence that an owned data reset is warranted.
+            raise UnsafeState(str(error)) from error
+        observation = result.assessment.workload
+        if observation.workload_uid != selected_uid:
+            raise UnsafeState('selected StatefulSet identity changed during full health inspection')
+        latest = self.statefulset()
+        if latest['metadata'].get('uid') != selected_uid:
+            raise UnsafeState('selected StatefulSet identity changed during full health inspection')
+        if result.status is not ProbeStatus.SATISFIED:
+            reason = '; '.join(result.reasons) or 'full health requirements are unsatisfied'
+            raise RuntimeError(reason)
         return True
 
     def node_state(self, pod):
-        db = database_container({'spec': pod['spec']})
-        if pod.get('status', {}).get('phase') != 'Running' or not any(s['name'] == db['name'] and 'running' in s.get('state', {}) for s in pod['status'].get('containerStatuses', [])):
-            raise RuntimeError('database process is not Running')
-        probe = db.get('readinessProbe', {}).get('httpGet', {})
-        ports = {p.get('name'): p['containerPort'] for p in db.get('ports', [])}
-        port = ports.get(probe.get('port'), probe.get('port'))
-        scheme = probe.get('scheme', 'HTTP').lower()
-        if probe.get('path') != '/health?ready=1' or probe.get('host') or not isinstance(port, int) or scheme not in ('http', 'https'):
-            raise UnsafeState('case requires an HTTP /health?ready=1 readiness probe on the database listener')
-        output = self.require(self.kubectl('exec', pod['metadata']['name'], '-c', db['name'], '--', 'curl',
-            '--silent', '--show-error', '--insecure', '--connect-timeout', '2', '--max-time', '3',
-            '--write-out', '\n%{http_code}', f'{scheme}://localhost:{port}/health?ready=1', timeout=8))
-        body, status = output.rsplit('\n', 1)
-        payload = json.loads(body)
-        if status == '503' and payload.get('error') == 'node is waiting for cluster initialization':
-            return 'uninitialized'
-        if status == '200':
-            return 'initialized'
-        raise RuntimeError('database health failed for a reason other than waiting for initialization')
+        def execute_curl(pod_name, container_name, argv, timeout):
+            return self.require(self.kubectl(
+                'exec', pod_name, '-c', container_name, '--', *argv, timeout=timeout
+            ))
+
+        return observe_initialization_state(
+            pod,
+            execute_curl=execute_curl,
+            error_type=UnsafeState,
+        )
 
     def deployment_ready(self):
         sts = self.statefulset()
@@ -397,30 +370,7 @@ class Cluster:
         self.wait(lambda: (self.get('pod', meta['name']) or {}).get('metadata', {}).get('uid') != meta['uid'], 120)
 
     def stores(self, sts, count=None):
-        db = database_container(sts['spec']['template'])
-        tokens = arguments(db)
-        stores = [t.split('=', 1)[1] for t in tokens if t.startswith(('--store=', '-s='))]
-        stores += [t[2:] for t in tokens if t.startswith('-s') and not t.startswith('-s=') and t != '-s']
-        stores += [tokens[i + 1] for i, t in enumerate(tokens[:-1]) if t in ('--store', '-s')]
-        claims = {v['metadata']['name'] for v in sts['spec'].get('volumeClaimTemplates', [])}
-        mappings = []
-        default_store = str(PurePosixPath(db.get('workingDir', '/cockroach')) / 'cockroach-data')
-        for store in stores or [default_store]:
-            options = dict(p.split('=', 1) for p in store.split(',') if '=' in p)
-            path = options.get('path', store.split(',', 1)[0])
-            mounts = sorted((m for m in db.get('volumeMounts', []) if path == m['mountPath'].rstrip('/') or path.startswith(m['mountPath'].rstrip('/') + '/')), key=lambda m: len(m['mountPath']), reverse=True)
-            if options.get('type') == 'mem' or not path.startswith('/') or str(PurePosixPath(path)) != path or '..' in PurePosixPath(path).parts or not mounts:
-                raise UnsafeState('reset requires absolute normalized PVC-backed store paths')
-            mount = mounts[0]
-            if mount['name'] not in claims or any(mount.get(k) for k in ('subPath', 'subPathExpr', 'readOnly')):
-                raise UnsafeState('reset only supports exclusive volumeClaimTemplate stores without subPath')
-            for container in sts['spec']['template']['spec'].get('containers', []) + sts['spec']['template']['spec'].get('initContainers', []):
-                if container['name'] != db['name'] and any(m['name'] == mount['name'] for m in container.get('volumeMounts', [])):
-                    raise UnsafeState('database store is shared with another container')
-            relative = path[len(mount['mountPath'].rstrip('/')):].lstrip('/')
-            if any(old['volume'] == mount['name'] and (not relative or not old['relative'] or relative == old['relative'] or relative.startswith(old['relative'] + '/') or old['relative'].startswith(relative + '/')) for old in mappings):
-                raise UnsafeState('overlapping database stores are unsupported')
-            mappings.append({'volume': mount['name'], 'relative': relative})
+        mappings = pvc_store_mappings(sts, error_type=UnsafeState)
         result = []
         for i in range(count if count is not None else int(sts['spec'].get('replicas', 1))):
             for mapping in mappings:
