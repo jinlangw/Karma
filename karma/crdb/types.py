@@ -20,6 +20,14 @@ class TLSMode(StrEnum):
     UNKNOWN = "unknown"
 
 
+class HTTPTransport(StrEnum):
+    """Observed transport for CockroachDB's HTTP listener, independent of SQL TLS."""
+
+    HTTP = "http"
+    HTTPS = "https"
+    UNKNOWN = "unknown"
+
+
 class ProbeStatus(StrEnum):
     SATISFIED = "satisfied"
     UNSATISFIED = "unsatisfied"
@@ -192,7 +200,28 @@ class PodObservation:
     container_ready: bool
     pod_ready: bool
     revision: str | None
+    image: str
     startup_matches_template: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SQLConnectionObservation:
+    """Connection settings from one owned Pod; RPC host may be unresolved."""
+
+    namespace: str
+    workload_name: str
+    workload_uid: str
+    pod_name: str
+    pod_uid: str
+    container_name: str
+    image: str
+    sql_binary: str
+    sql_host: str
+    sql_port: int
+    rpc_port: int
+    tls_mode: TLSMode
+    certs_dir: str | None
+    rpc_host: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +284,7 @@ class Observation:
     probe_preservation_hash: str
     env_references: tuple[EnvReference, ...]
     tls_mode: TLSMode
+    http_transport: HTTPTransport
     certs_dir: str | None
     sql_port: int
     rpc_port: int
@@ -294,6 +324,48 @@ class Assessment:
     reasons: tuple[str, ...]
     workload: Observation
     health: HealthObservation
+
+
+@dataclass(frozen=True, slots=True)
+class NodeStatusObservation:
+    node_id: int
+    membership: str | None
+    is_draining: bool | None
+    is_available: bool
+    ranges_unavailable: int
+    ranges_underreplicated: int
+    is_live: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NodeLivenessObservation:
+    node_id: int
+    membership: str
+    draining: bool
+    is_live: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _ClusterHealthAssessment:
+    """Read-only join of selected SQL nodes, node status, and KV liveness."""
+
+    status: ProbeStatus
+    reasons: tuple[str, ...]
+    assessment: Assessment
+    pod_node_ids: tuple[tuple[str, int], ...]
+    node_status: tuple[NodeStatusObservation, ...]
+    node_liveness: tuple[NodeLivenessObservation, ...]
+    attempts: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class FullHealthAssessment(_ClusterHealthAssessment):
+    """Serving health plus the requirement that ranges are fully replicated."""
+
+
+@dataclass(frozen=True, slots=True)
+class ServingHealthAssessment(_ClusterHealthAssessment):
+    """Usable selected-node quorum, allowing under-replicated ranges."""
 
 
 @dataclass(frozen=True, slots=True)

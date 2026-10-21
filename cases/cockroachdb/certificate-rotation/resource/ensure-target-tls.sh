@@ -15,10 +15,9 @@ TOOLBOX_HELPER=cases/cockroachdb/certificate-rotation/resource/ensure-openssl-to
 RBAC_MANIFEST=cases/cockroachdb/certificate-rotation/resource/rbac.yaml
 SERVICES_MANIFEST=cases/cockroachdb/certificate-rotation/resource/services.yaml
 STATEFULSET_MANIFEST=cases/cockroachdb/certificate-rotation/resource/statefulset.yaml
-
-statefulset_exists() {
-  kubectl -n "$NAMESPACE" get statefulset "$CLUSTER_NAME" >/dev/null 2>&1
-}
+SQL_READY_HELPER=cases/cockroachdb/certificate-rotation/resource/sql_ready.py
+SECURE_TARGET_HELPER=cases/cockroachdb/certificate-rotation/resource/secure_target.py
+CERTS_DIR=/cockroach/cockroach-certs
 
 statefulset_uses_target_tls_secret() {
   statefulset_yaml=$(kubectl -n "$NAMESPACE" get statefulset "$CLUSTER_NAME" \
@@ -78,11 +77,24 @@ secret_material_valid() {
     [ "$toolbox_ca_fingerprint" = "$secret_ca_fingerprint" ]
 }
 
-secure_sql_works() {
+legacy_secure_sql_works() {
   host="$CLUSTER_NAME-0.$CLUSTER_NAME.$NAMESPACE.svc.cluster.local"
   kubectl -n "$NAMESPACE" exec "$CLUSTER_NAME-0" -- \
     ./cockroach sql --certs-dir=/cockroach/cockroach-certs --host="$host" -e 'SELECT 1;' \
     >/dev/null 2>&1
+}
+
+secure_sql_works() {
+  if python3 "$SQL_READY_HELPER" --namespace "$NAMESPACE" \
+    --statefulset "$CLUSTER_NAME" --policy tls-only >/dev/null 2>&1; then
+    return 0
+  else
+    status=$?
+  fi
+  case "$status" in
+    2|126|127) legacy_secure_sql_works ;;
+    *) return 1 ;;
+  esac
 }
 
 wait_for_secure_sql() {
@@ -138,12 +150,47 @@ wait_for_target_pods() {
 }
 
 apply_secure_statefulset() {
-  envsubst '$BENCH_NAMESPACE $BENCH_PARAM_CLUSTER_NAME' < "$RBAC_MANIFEST" |
-    kubectl -n "$NAMESPACE" apply -f -
-  envsubst '$BENCH_PARAM_CLUSTER_NAME' < "$SERVICES_MANIFEST" |
-    kubectl -n "$NAMESPACE" apply -f -
+  apply_secure_rbac_and_services
   envsubst '$BENCH_PARAM_CLUSTER_NAME' < "$STATEFULSET_MANIFEST" |
     kubectl -n "$NAMESPACE" apply -f -
+}
+
+apply_secure_rbac() {
+  envsubst '$BENCH_NAMESPACE $BENCH_PARAM_CLUSTER_NAME' < "$RBAC_MANIFEST" |
+    kubectl -n "$NAMESPACE" apply -f -
+}
+
+apply_secure_rbac_and_services() {
+  apply_secure_rbac
+  envsubst '$BENCH_PARAM_CLUSTER_NAME' < "$SERVICES_MANIFEST" |
+    kubectl -n "$NAMESPACE" apply -f -
+}
+
+preserve_or_repair_inherited_services() {
+  for service_name in "$CLUSTER_NAME" "$CLUSTER_NAME-public"; do
+    service_status=0
+    python3 "$SECURE_TARGET_HELPER" service-check \
+      --namespace "$NAMESPACE" --statefulset "$CLUSTER_NAME" \
+      --service "$service_name" --plan "$plan_file" || service_status=$?
+    case "$service_status" in
+      0)
+        ;;
+      4)
+        rendered_service="$WORK_DIR/$service_name.yaml"
+        python3 "$SECURE_TARGET_HELPER" render-service \
+          --namespace "$NAMESPACE" --statefulset "$CLUSTER_NAME" \
+          --service "$service_name" --cluster-name "$CLUSTER_NAME" \
+          --services-manifest "$SERVICES_MANIFEST" > "$rendered_service"
+        # Keep the original apply-based repair for a missing or invalid
+        # Service. The read/reclassification above is not an atomic UID guard
+        # against a concurrent Service replacement.
+        kubectl -n "$NAMESPACE" apply -f "$rendered_service"
+        ;;
+      *)
+        exit "$service_status"
+        ;;
+    esac
+  done
 }
 
 case "$MODE" in
@@ -151,16 +198,31 @@ case "$MODE" in
     tls_ready
     ;;
   apply)
+    # Snapshot and validate the full inherited template before any toolbox,
+    # Secret, Service, or StatefulSet change. Status 3 is reserved for an
+    # explicitly missing target; API errors remain failures.
+    plan_file="$WORK_DIR/secure-target-plan.json"
+    preflight_status=0
+    python3 "$SECURE_TARGET_HELPER" prepare \
+      --namespace "$NAMESPACE" --statefulset "$CLUSTER_NAME" \
+      --secret "$SECRET_NAME" --cert-dir "$CERTS_DIR" \
+      --case-manifest "$STATEFULSET_MANIFEST" \
+      --plan "$plan_file" || preflight_status=$?
+    case "$preflight_status" in
+      0) was_present=true ;;
+      3) was_present=false ;;
+      *) exit "$preflight_status" ;;
+    esac
+
     # Keep the rotation CA private key beside the public CA only in the worker
     # pod. If the live cluster is using another CA, the worker's valid CA is
     # installed on this selected cluster so the agent can perform a same-CA
     # rotation without touching other clusters.
     sh "$TOOLBOX_HELPER" apply
 
-    was_present=false
-    if statefulset_exists; then
-      was_present=true
-      kubectl -n "$NAMESPACE" scale "statefulset/$CLUSTER_NAME" --replicas=0
+    if [ "$was_present" = true ]; then
+      python3 "$SECURE_TARGET_HELPER" scale \
+        --namespace "$NAMESPACE" --statefulset "$CLUSTER_NAME" --plan "$plan_file"
       if ! kubectl -n "$NAMESPACE" wait --for=delete pod -l "$LABEL" --timeout=150s; then
         kubectl -n "$NAMESPACE" delete pods -l "$LABEL" \
           --grace-period=0 --force --ignore-not-found=true --wait=false
@@ -169,7 +231,14 @@ case "$MODE" in
     fi
 
     publish_secret_from_toolbox
-    apply_secure_statefulset
+    if [ "$was_present" = true ]; then
+      apply_secure_rbac
+      preserve_or_repair_inherited_services
+      python3 "$SECURE_TARGET_HELPER" finish \
+        --namespace "$NAMESPACE" --statefulset "$CLUSTER_NAME" --plan "$plan_file"
+    else
+      apply_secure_statefulset
+    fi
 
     # A missing StatefulSet is initialized by ensure-target-cluster.sh after
     # the secure workload has been created. For an existing initialized

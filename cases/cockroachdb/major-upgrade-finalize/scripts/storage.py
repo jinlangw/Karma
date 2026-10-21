@@ -1,25 +1,18 @@
 """Owned store/PKI guards and resumable fresh-store preparation."""
-import hashlib
 import json
 import re
 import shlex
 
 from cluster import UnsafeState, database_container, flag_value
+from karma.crdb.security import mounted_secret_signatures
 
 
 def signatures(cluster, template):
-    names = set()
-    for volume in template['spec'].get('volumes', []):
-        if 'secret' in volume:
-            names.add(volume['secret']['secretName'])
-        names |= {s['secret']['name'] for s in volume.get('projected', {}).get('sources', []) if 'secret' in s}
-    result = {}
-    for name in sorted(names):
-        secret = cluster.get('secret', name)
-        if secret is None:
-            raise UnsafeState('mounted Secret is missing')
-        result[name] = {'uid': secret['metadata']['uid'], 'sha256': hashlib.sha256(json.dumps(secret.get('data', {}), sort_keys=True).encode()).hexdigest()}
-    return result
+    return mounted_secret_signatures(
+        template,
+        lambda name: cluster.get('secret', name),
+        error_type=UnsafeState,
+    )
 
 
 class Stores:
