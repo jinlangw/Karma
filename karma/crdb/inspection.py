@@ -8,11 +8,15 @@ import json
 import re
 import shlex
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from .adapter import ClusterAdapter
+from .startup import certificate_directory as _resolve_certificate_directory
 from .types import (
     EnvReference,
+    HTTPTransport,
+    InvalidRequirementError,
     MissingResourceError,
     MountObservation,
     Observation,
@@ -22,6 +26,7 @@ from .types import (
     PvcObservation,
     RolloutInProgressError,
     SecretFingerprint,
+    SQLConnectionObservation,
     ServiceObservation,
     ServicePortObservation,
     TLSMode,
@@ -119,15 +124,14 @@ def _shell_start_tokens(container: Mapping[str, Any]) -> list[str]:
     return tokens
 
 
-def _advertised_sql_host_template(
+def _advertised_host_template(
     flags: Mapping[str, str | None],
+    candidates: tuple[str, ...],
 ) -> tuple[str | None, str | None, str | None, str | None]:
-    """Resolve explicit advertised SQL or per-node address forms without DNS guesses."""
-    # The SQL-specific address is authoritative when present; otherwise honor
-    # Cockroach's node advertise address and then its compatible host flag.
+    """Resolve one advertised listener address without inferring DNS."""
     value = None
     flag_name = None
-    for candidate in ("advertise-sql-addr", "advertise-addr", "advertise-host"):
+    for candidate in candidates:
         if candidate in flags:
             value = flags[candidate]
             flag_name = candidate
@@ -155,6 +159,38 @@ def _advertised_sql_host_template(
         if host and re.fullmatch(rf"{domain}", host) and len(host) <= 253:
             return host, None, None, host
     return None, None, None, None
+
+
+def _advertised_sql_host_template(
+    flags: Mapping[str, str | None],
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Resolve the SQL advertise address, preferring its SQL-specific flag."""
+    return _advertised_host_template(flags, ("advertise-sql-addr", "advertise-addr", "advertise-host"))
+
+
+def _advertised_rpc_host_template(
+    flags: Mapping[str, str | None],
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Resolve the RPC advertise address independently from SQL advertisement."""
+    try:
+        return _advertised_host_template(flags, ("advertise-addr", "advertise-host"))
+    except UnsupportedLayoutError:
+        # RPC is optional to SQL-only observers. An unparseable RPC advertise
+        # address must not prevent them from using a valid SQL advertise address.
+        return None, None, None, None
+
+
+def _rpc_advertise_port_matches_listener(flags: Mapping[str, str | None], rpc_port: int) -> bool:
+    if "advertise-addr" not in flags:
+        return True
+    value = flags["advertise-addr"]
+    if value is None:
+        return False
+    match = re.search(r":([0-9]+)$", value)
+    if match is None:
+        return False
+    port = int(match.group(1))
+    return 1 <= port <= 65535 and port == rpc_port
 
 
 def _pod_sql_host(
@@ -491,7 +527,13 @@ def _standard_service_account_mount(
     return live_volume is not None and _is_standard_service_account_projection(live_volume)
 
 
-def _startup_mismatches(template: Mapping[str, Any], pod: Mapping[str, Any], container_name: str) -> tuple[str, ...]:
+def _startup_mismatches(
+    template: Mapping[str, Any],
+    pod: Mapping[str, Any],
+    container_name: str,
+    *,
+    allow_image_mismatch: bool = False,
+) -> tuple[str, ...]:
     template_containers = [_mapping(item) for item in _list(_mapping(template.get("spec")).get("containers"))]
     pod_containers = [_mapping(item) for item in _list(_mapping(pod.get("spec")).get("containers"))]
     left = next((item for item in template_containers if item.get("name") == container_name), None)
@@ -507,14 +549,21 @@ def _startup_mismatches(template: Mapping[str, Any], pod: Mapping[str, Any], con
         "volumeMounts",
         "env",
         "envFrom",
+        "resources",
         "securityContext",
+        "lifecycle",
+        "startupProbe",
         "livenessProbe",
         "readinessProbe",
     )
     mismatches = [
         key for key in important
-        if key != "volumeMounts" and left.get(key) != right.get(key)
+        if key != "volumeMounts"
+        and not (allow_image_mismatch and key == "image")
+        and left.get(key) != right.get(key)
     ]
+    if allow_image_mismatch and left.get("image") != right.get("image"):
+        mismatches.append("image")
     if not _standard_service_account_mount(template, pod, container_name):
         template_mounts = [_mapping(item) for item in _list(left.get("volumeMounts"))]
         live_mounts = [_mapping(item) for item in _list(right.get("volumeMounts"))]
@@ -527,11 +576,405 @@ def _startup_equivalent(template: Mapping[str, Any], pod: Mapping[str, Any], con
     return not _startup_mismatches(template, pod, container_name)
 
 
+@dataclass(frozen=True, slots=True)
+class _StartupLayout:
+    container_index: int
+    container: Mapping[str, Any]
+    container_name: str
+    tokens: tuple[str, ...]
+    env_references: tuple[EnvReference, ...]
+    tls_mode: TLSMode
+    certs_dir: str | None
+    sql_port: int
+    rpc_port: int
+    http_port: int | None
+    sql_bind_host: str | None
+    rpc_bind_host: str | None
+    http_bind_host: str | None
+    sql_port_name: str | None
+    rpc_port_name: str | None
+    http_port_name: str | None
+    mounts: tuple[MountObservation, ...]
+    secrets: tuple[SecretFingerprint, ...]
+    advertised_sql_host_template: str | None
+    advertised_service: str | None
+    cluster_domain: str | None
+    literal_advertised_host: str | None
+    advertised_rpc_host_template: str | None
+    rpc_advertised_service: str | None
+    rpc_cluster_domain: str | None
+    literal_rpc_host: str | None
+    rpc_advertise_port_matches_listener: bool
+    http_transport: HTTPTransport
+
+
+def _startup_layout(
+    adapter: ClusterAdapter,
+    ref: WorkloadRef,
+    source: Mapping[str, Any],
+    *,
+    mode: str,
+) -> _StartupLayout:
+    """Parse startup fields for strict inspection or a selected SQL connection."""
+    if mode not in {"full", "sql_connection"}:
+        raise ValueError("unknown private startup inspection mode")
+    inspect_http = mode == "full"
+    inspect_secret_material = mode == "full"
+    source_spec = _mapping(source.get("spec"))
+    container_index, container = _selected_container(source, ref.container_name)
+    container_name = str(container.get("name", ""))
+    tokens = _shell_start_tokens(container)
+    flags = _flags(tokens)
+    validation_tokens = tokens
+    if mode == "sql_connection":
+        # HTTP-only listener flags do not affect the gateway SQL connection.
+        # Exclude their values from this narrow observer's env-expansion gate.
+        validation_tokens = []
+        skip_flag_value = False
+        for token in tokens:
+            if skip_flag_value:
+                skip_flag_value = False
+                continue
+            if token.startswith("--"):
+                flag, separator, _value = token[2:].partition("=")
+                if flag in {"http-addr", "http-host", "http-port"}:
+                    skip_flag_value = not separator
+                    continue
+            validation_tokens.append(token)
+    _validate_known_environment_expansion(validation_tokens, container)
+    if inspect_http and "http-port" in flags:
+        raise UnsupportedLayoutError(
+            "Startup uses unsupported --http-port; HTTP listener port must be resolved from --http-addr"
+        )
+    unencrypted_localhost_http = (
+        "unencrypted-localhost-http" in flags
+        and flags.get("unencrypted-localhost-http") not in {"false", "0"}
+    )
+    if inspect_http and unencrypted_localhost_http:
+        has_http_addr = "http-addr" in flags
+        has_http_host_alias = "http-host" in flags
+        if has_http_addr and has_http_host_alias:
+            raise UnsupportedLayoutError(
+                "Startup sets both --http-addr and its --http-host alias; the HTTP bind is ambiguous"
+            )
+        if has_http_addr or has_http_host_alias:
+            if has_http_addr:
+                http_addr = flags["http-addr"]
+                if http_addr is None:
+                    raise UnsupportedLayoutError("--http-addr has no value")
+                http_host = _address_host(flags, "http-addr")
+            else:
+                http_host = flags["http-host"]
+                if http_host is None:
+                    raise UnsupportedLayoutError("--http-host has no value")
+
+            if http_host not in {None, ""}:
+                if http_host != "localhost":
+                    raise UnsupportedLayoutError(
+                        "--unencrypted-localhost-http conflicts with an explicit non-local HTTP bind host"
+                    )
+            else:
+                # Cockroach fills an explicitly empty HTTP host from its RPC/listen
+                # host before validating the localhost-only flag.
+                has_listen_addr = "listen-addr" in flags
+                has_host_alias = "host" in flags
+                if has_listen_addr == has_host_alias:
+                    raise UnsupportedLayoutError(
+                        "An explicitly empty HTTP host has an ambiguous inherited listen address"
+                    )
+                inherited_host = (
+                    _address_host(flags, "listen-addr")
+                    if has_listen_addr
+                    else flags["host"]
+                )
+                if inherited_host != "localhost":
+                    raise UnsupportedLayoutError(
+                        "An explicitly empty HTTP host inherits a non-local listen address"
+                    )
+
+    for flag_name, flag_value in flags.items():
+        if not flag_value or "$" not in flag_value:
+            continue
+        if not inspect_http and flag_name in {"http-addr", "http-host", "http-port"}:
+            continue
+        substitutions = re.findall(r"\$\(([^)]+)\)", flag_value)
+        remainder = re.sub(r"\$\((?:POD_NAME|POD_NAMESPACE)\)", "", flag_value)
+        if (
+            flag_name not in {"advertise-host", "advertise-addr", "advertise-sql-addr", "join"}
+            or "$" in remainder
+            or any(item not in {"POD_NAME", "POD_NAMESPACE"} for item in substitutions)
+        ):
+            raise UnsupportedLayoutError(f"Database flag --{flag_name} uses unsupported environment expansion")
+
+    ports = _container_ports(container)
+    if "rpc-addr" in flags:
+        raise UnsupportedLayoutError("--rpc-addr is not a supported CockroachDB startup flag in this library")
+    sql_addr_port = _flag_port(flags, "sql-addr")
+    listen_port = _flag_port(flags, "listen-addr")
+    flag_port = _flag_port(flags, "port")
+    sql_port = (
+        sql_addr_port
+        if sql_addr_port is not None
+        else listen_port
+        if listen_port is not None
+        else flag_port
+        if flag_port is not None
+        else 26257
+    )
+    rpc_port = listen_port if listen_port is not None else flag_port if flag_port is not None else 26257
+    http_port = _flag_port(flags, "http-addr") if inspect_http else None
+    if inspect_http and http_port is None:
+        http_port = 8080
+    sql_bind_host = _address_host(flags, "sql-addr")
+    rpc_bind_host = _address_host(flags, "listen-addr")
+    http_bind_host = _address_host(flags, "http-addr") if inspect_http else None
+    sql_port_name = _port_name(ports, sql_port, ("sql",))
+    rpc_port_name = _port_name(ports, rpc_port, ("rpc", "grpc"))
+    http_port_name = _port_name(ports, http_port, ("http",)) if http_port is not None else None
+
+    tls_flag = flags.get("insecure")
+    configured_certs_dir = flags.get("certs-dir")
+    if "certs-dir" in flags and configured_certs_dir is None:
+        raise UnsupportedLayoutError("--certs-dir has no value")
+    if configured_certs_dir is not None and ("$" in configured_certs_dir or "`" in configured_certs_dir):
+        raise UnsupportedLayoutError("--certs-dir uses dynamic shell expansion")
+    if tls_flag not in (None, "false", "0") and configured_certs_dir:
+        raise UnsupportedLayoutError("Startup specifies both --insecure and --certs-dir")
+
+    certs_dir = None
+    if tls_flag not in (None, "false", "0"):
+        tls_mode = TLSMode.INSECURE
+    else:
+        certs_dir = _resolve_certificate_directory(
+            container,
+            configured_certs_dir,
+            pod_security_context=lambda: _mapping(source_spec.get("securityContext")),
+            error_type=UnsupportedLayoutError,
+        )
+        tls_mode = TLSMode.TLS
+
+    volumes = [_mapping(item) for item in _list(source_spec.get("volumes"))]
+    volume_by_name = {str(item.get("name")): item for item in volumes if item.get("name")}
+    mounts = []
+    if inspect_secret_material:
+        for mount_value in _list(container.get("volumeMounts")):
+            mount = _mapping(mount_value)
+            mount_name = str(mount.get("name", ""))
+            volume = volume_by_name.get(mount_name, {})
+            secret_name, source_kind, file_map = _secret_volume(volume)
+            mounts.append(
+                MountObservation(
+                    name=mount_name,
+                    path=str(mount.get("mountPath", "")),
+                    read_only=bool(mount.get("readOnly", False)),
+                    source_kind=source_kind,
+                    source_name=secret_name,
+                    sub_path=str(mount.get("subPath") or mount.get("subPathExpr") or "") or None,
+                    mounted_files=tuple(sorted(file_map.items())),
+                )
+            )
+    env_refs = _env_references(container)
+    secrets: tuple[SecretFingerprint, ...] = ()
+    if tls_mode is TLSMode.TLS:
+        if inspect_secret_material:
+            cert_mounts = [mount for mount in mounts if mount.path == certs_dir]
+            if len(cert_mounts) != 1:
+                raise UnsupportedLayoutError("Configured --certs-dir is not backed by exactly one mounted Secret")
+            cert_mount = cert_mounts[0]
+            if cert_mount.sub_path or cert_mount.source_kind not in {"secret", "projected-secret"}:
+                raise UnsupportedLayoutError("Certificate mount layout is unsupported")
+            if not cert_mount.read_only:
+                raise UnsupportedLayoutError("Certificate Secret mount must be read-only")
+            if not cert_mount.source_name:
+                raise UnsupportedLayoutError("Certificate Secret identity is unavailable")
+            fingerprint = adapter.secret_fingerprint(ref.namespace, cert_mount.source_name)
+            secrets = (fingerprint,)
+            mounted = dict(cert_mount.mounted_files) if cert_mount.mounted_files else {
+                key: key for key in fingerprint.keys
+            }
+            mounted_names = set(mounted.values())
+            if not _CERT_FILES.issubset(mounted_names):
+                raise UnsupportedLayoutError("Certificate Secret does not mount the required node certificates")
+            if not _ROOT_CLIENT_FILES.issubset(mounted_names):
+                raise UnsupportedLayoutError("Secure SQL inspection requires mounted client.root.crt and client.root.key")
+            for required in _ROOT_CLIENT_FILES | {"ca.crt"}:
+                key = next((source for source, filename in mounted.items() if filename == required), None)
+                if key is None or key not in dict(fingerprint.sha256_by_key):
+                    raise UnsupportedLayoutError("Root SQL credential files are not present in the mounted Secret")
+
+    advertised_host_template, advertised_service, cluster_domain, literal_advertised_host = (
+        _advertised_sql_host_template(flags)
+    )
+    advertised_rpc_host_template, rpc_advertised_service, rpc_cluster_domain, literal_rpc_host = (
+        _advertised_rpc_host_template(flags)
+    )
+    rpc_advertise_port_matches_listener = _rpc_advertise_port_matches_listener(flags, rpc_port)
+    if inspect_http and unencrypted_localhost_http:
+        http_bind_host = "localhost"
+    http_transport = (
+        HTTPTransport.HTTP
+        if unencrypted_localhost_http or tls_mode is TLSMode.INSECURE
+        else HTTPTransport.HTTPS
+        if tls_mode is TLSMode.TLS
+        else HTTPTransport.UNKNOWN
+    ) if inspect_http else HTTPTransport.UNKNOWN
+
+    return _StartupLayout(
+        container_index=container_index,
+        container=container,
+        container_name=container_name,
+        tokens=tuple(tokens),
+        env_references=env_refs,
+        tls_mode=tls_mode,
+        certs_dir=certs_dir,
+        sql_port=sql_port,
+        rpc_port=rpc_port,
+        http_port=http_port,
+        sql_bind_host=sql_bind_host,
+        rpc_bind_host=rpc_bind_host,
+        http_bind_host=http_bind_host,
+        sql_port_name=sql_port_name,
+        rpc_port_name=rpc_port_name,
+        http_port_name=http_port_name,
+        mounts=tuple(mounts),
+        secrets=secrets,
+        advertised_sql_host_template=advertised_host_template,
+        advertised_service=advertised_service,
+        cluster_domain=cluster_domain,
+        literal_advertised_host=literal_advertised_host,
+        advertised_rpc_host_template=advertised_rpc_host_template,
+        rpc_advertised_service=rpc_advertised_service,
+        rpc_cluster_domain=rpc_cluster_domain,
+        literal_rpc_host=literal_rpc_host,
+        rpc_advertise_port_matches_listener=rpc_advertise_port_matches_listener,
+        http_transport=http_transport,
+    )
+
+
 class WorkloadInspector:
     def __init__(self, adapter: ClusterAdapter):
         self.adapter = adapter
 
     def inspect(self, ref: WorkloadRef) -> Observation:
+        return self._inspect(ref, allow_image_rollout=False)
+
+    def inspect_for_health(self, ref: WorkloadRef) -> Observation:
+        """Observe health during an image-only StatefulSet rollout.
+
+        Every selected Pod is still checked against the desired template for
+        all startup fields except the container image. Probe preparation and
+        public inspection use the strict path above.
+        """
+        return self._inspect(ref, allow_image_rollout=True)
+
+    def inspect_sql_connection(
+        self,
+        ref: WorkloadRef,
+        ordinal: int = 0,
+    ) -> SQLConnectionObservation:
+        """Observe the SQL connection from one live Pod without requiring its peers.
+
+        This deliberately ignores the desired template, revision convergence,
+        Services, PVCs, Secret contents, certificate fingerprints, and other
+        ordinals. The selected Pod's own SQL startup flags define the connection;
+        the caller's SQL query validates that mounted client credentials work.
+        """
+        if type(ordinal) is not int or ordinal < 0:
+            raise InvalidRequirementError("Selected Pod ordinal must be a non-negative integer")
+        statefulset = self.adapter.get_resource("statefulset", ref.namespace, ref.name)
+        if statefulset is None:
+            raise MissingResourceError(f"StatefulSet {ref.namespace}/{ref.name} is missing")
+        sts_meta = _metadata(statefulset)
+        uid = sts_meta.get("uid")
+        if (
+            sts_meta.get("name") != ref.name
+            or sts_meta.get("namespace") != ref.namespace
+            or not isinstance(uid, str)
+            or not uid
+        ):
+            raise UnsupportedLayoutError("Selected StatefulSet lacks the requested Kubernetes identity")
+        if sts_meta.get("deletionTimestamp"):
+            raise RolloutInProgressError("Selected StatefulSet is terminating")
+        spec = _mapping(statefulset.get("spec"))
+        replicas = spec.get("replicas", 1)
+        if type(replicas) is not int or replicas < 1 or ordinal >= replicas:
+            raise RolloutInProgressError("Selected database Pod ordinal is outside the desired StatefulSet size")
+        selector = _mapping(_mapping(spec.get("selector")).get("matchLabels"))
+        if not selector:
+            raise UnsupportedLayoutError("StatefulSet has no selector for its selected Pod")
+
+        pod_name = f"{ref.name}-{ordinal}"
+        pod = self.adapter.get_resource("pod", ref.namespace, pod_name)
+        if pod is None:
+            raise RolloutInProgressError(f"Selected database Pod {pod_name} is not present")
+        pod_meta = _metadata(pod)
+        pod_uid = pod_meta.get("uid")
+        if pod_meta.get("name") != pod_name or pod_meta.get("namespace") != ref.namespace:
+            raise UnsupportedLayoutError("Kubernetes returned a different selected Pod identity than requested")
+        if not isinstance(pod_uid, str) or not pod_uid:
+            raise UnsupportedLayoutError("Selected database Pod lacks Kubernetes identity metadata")
+        if pod_meta.get("deletionTimestamp"):
+            raise RolloutInProgressError("Selected database Pod is terminating")
+        labels = _mapping(pod_meta.get("labels"))
+        if any(labels.get(key) != value for key, value in selector.items()):
+            raise UnsupportedLayoutError("Selected database Pod does not match its StatefulSet selector")
+        owner = next(
+            (
+                _mapping(value)
+                for value in _list(pod_meta.get("ownerReferences"))
+                if _mapping(value).get("uid") == uid and _mapping(value).get("controller") is True
+            ),
+            None,
+        )
+        if owner is None or owner.get("kind") not in (None, "StatefulSet") or owner.get("name") not in (None, ref.name):
+            raise UnsupportedLayoutError("Selected database Pod is not owned by the selected StatefulSet")
+
+        layout = _startup_layout(self.adapter, ref, pod, mode="sql_connection")
+        host = _pod_sql_host(
+            pod_name,
+            ref.namespace,
+            layout.advertised_service,
+            layout.cluster_domain,
+            layout.literal_advertised_host,
+            replicas,
+        )
+        if host is None:
+            raise UnsupportedLayoutError("Selected Pod has no resolvable advertised SQL host")
+        rpc_host = _pod_sql_host(
+            pod_name,
+            ref.namespace,
+            layout.rpc_advertised_service,
+            layout.rpc_cluster_domain,
+            layout.literal_rpc_host,
+            replicas,
+        )
+        if not layout.rpc_advertise_port_matches_listener:
+            rpc_host = None
+
+        current_sts = self.adapter.get_resource("statefulset", ref.namespace, ref.name)
+        current_pod = self.adapter.get_resource("pod", ref.namespace, pod_name)
+        if current_sts is None or _metadata(current_sts).get("uid") != uid:
+            raise RolloutInProgressError("Selected StatefulSet identity changed during SQL connection inspection")
+        if current_pod is None or _metadata(current_pod).get("uid") != pod_uid:
+            raise RolloutInProgressError("Selected Pod identity changed during SQL connection inspection")
+        return SQLConnectionObservation(
+            namespace=ref.namespace,
+            workload_name=ref.name,
+            workload_uid=uid,
+            pod_name=pod_name,
+            pod_uid=pod_uid,
+            container_name=layout.container_name,
+            image=str(layout.container.get("image", "")),
+            sql_binary=layout.tokens[0],
+            sql_host=host,
+            sql_port=layout.sql_port,
+            rpc_port=layout.rpc_port,
+            tls_mode=layout.tls_mode,
+            certs_dir=layout.certs_dir,
+            rpc_host=rpc_host,
+        )
+
+    def _inspect(self, ref: WorkloadRef, *, allow_image_rollout: bool) -> Observation:
         statefulset = self.adapter.get_resource("statefulset", ref.namespace, ref.name)
         if statefulset is None:
             raise MissingResourceError(f"StatefulSet {ref.namespace}/{ref.name} is missing")
@@ -558,119 +1001,37 @@ class WorkloadInspector:
         template = _mapping(spec.get("template"))
         pod_template_metadata = _metadata(template)
         pod_template_spec = _mapping(template.get("spec"))
-        container_index, container = _selected_container(template, ref.container_name)
-        container_name = str(container.get("name", ""))
-        tokens = _shell_start_tokens(container)
-        _validate_known_environment_expansion(tokens, container)
-        flags = _flags(tokens)
-        for flag_name, flag_value in flags.items():
-            if not flag_value or "$" not in flag_value:
-                continue
-            substitutions = re.findall(r"\$\(([^)]+)\)", flag_value)
-            remainder = re.sub(r"\$\((?:POD_NAME|POD_NAMESPACE)\)", "", flag_value)
-            if (
-                flag_name not in {"advertise-host", "advertise-addr", "advertise-sql-addr", "join"}
-                or "$" in remainder
-                or any(item not in {"POD_NAME", "POD_NAMESPACE"} for item in substitutions)
-            ):
-                raise UnsupportedLayoutError(f"Database flag --{flag_name} uses unsupported environment expansion")
-        ports = _container_ports(container)
-        if "rpc-addr" in flags:
-            raise UnsupportedLayoutError("--rpc-addr is not a supported CockroachDB startup flag in this library")
-        sql_addr_port = _flag_port(flags, "sql-addr")
-        listen_port = _flag_port(flags, "listen-addr")
-        flag_port = _flag_port(flags, "port")
-        if sql_addr_port is not None:
-            sql_port = sql_addr_port
-        elif flag_port is not None:
-            sql_port = flag_port
-        else:
-            sql_port = 26257
-        if listen_port is not None:
-            rpc_port = listen_port
-        elif flag_port is not None:
-            rpc_port = flag_port
-        else:
-            rpc_port = 26257
-        http_port = _flag_port(flags, "http-addr")
-        if http_port is None:
-            http_port = 8080
-        sql_bind_host = _address_host(flags, "sql-addr")
-        rpc_bind_host = _address_host(flags, "listen-addr")
-        http_bind_host = _address_host(flags, "http-addr")
-        http_port_name = _port_name(ports, http_port, ("http",))
-        sql_port_name = _port_name(ports, sql_port, ("sql",))
-        rpc_port_name = _port_name(ports, rpc_port, ("rpc", "grpc"))
-
-        tls_flag = flags.get("insecure")
-        certs_dir = flags.get("certs-dir")
-        if certs_dir is not None and ("$" in certs_dir or "`" in certs_dir):
-            raise UnsupportedLayoutError("--certs-dir uses dynamic shell expansion")
-        if tls_flag not in (None, "false", "0") and certs_dir:
-            raise UnsupportedLayoutError("Startup specifies both --insecure and --certs-dir")
-
-        volumes = [_mapping(item) for item in _list(pod_template_spec.get("volumes"))]
-        volume_by_name = {str(item.get("name")): item for item in volumes if item.get("name")}
-        mounts = []
-        for mount_value in _list(container.get("volumeMounts")):
-            mount = _mapping(mount_value)
-            mount_name = str(mount.get("name", ""))
-            volume = volume_by_name.get(mount_name, {})
-            secret_name, source_kind, file_map = _secret_volume(volume)
-            mounts.append(
-                MountObservation(
-                    name=mount_name,
-                    path=str(mount.get("mountPath", "")),
-                    read_only=bool(mount.get("readOnly", False)),
-                    source_kind=source_kind,
-                    source_name=secret_name,
-                    sub_path=str(mount.get("subPath") or mount.get("subPathExpr") or "") or None,
-                    mounted_files=tuple(sorted(file_map.items())),
-                )
-            )
-        env_refs = _env_references(container)
-        secret_fingerprints: tuple[SecretFingerprint, ...] = ()
-        observed_tls = TLSMode.UNKNOWN
-        if tls_flag not in (None, "false", "0"):
-            observed_tls = TLSMode.INSECURE
-        elif certs_dir is not None:
-            if not certs_dir.startswith("/"):
-                raise UnsupportedLayoutError("--certs-dir must be an absolute path")
-            cert_mounts = [mount for mount in mounts if mount.path == certs_dir]
-            if len(cert_mounts) != 1:
-                raise UnsupportedLayoutError("Configured --certs-dir is not backed by exactly one mounted Secret")
-            cert_mount = cert_mounts[0]
-            if cert_mount.sub_path or cert_mount.source_kind not in {"secret", "projected-secret"}:
-                raise UnsupportedLayoutError("Certificate mount layout is unsupported")
-            if not cert_mount.read_only:
-                raise UnsupportedLayoutError("Certificate Secret mount must be read-only")
-            if not cert_mount.source_name:
-                raise UnsupportedLayoutError("Certificate Secret identity is unavailable")
-            fingerprint = self.adapter.secret_fingerprint(ref.namespace, cert_mount.source_name)
-            secret_fingerprints = (fingerprint,)
-            mounted = dict(cert_mount.mounted_files) if cert_mount.mounted_files else {
-                key: key for key in fingerprint.keys
-            }
-            mounted_names = set(mounted.values())
-            if not _CERT_FILES.issubset(mounted_names):
-                raise UnsupportedLayoutError("Certificate Secret does not mount the required node certificates")
-            if not _ROOT_CLIENT_FILES.issubset(mounted_names):
-                raise UnsupportedLayoutError("Secure SQL inspection requires mounted client.root.crt and client.root.key")
-            for required in _ROOT_CLIENT_FILES | {"ca.crt"}:
-                key = next((source for source, filename in mounted.items() if filename == required), None)
-                if key is None or key not in dict(fingerprint.sha256_by_key):
-                    raise UnsupportedLayoutError("Root SQL credential files are not present in the mounted Secret")
-            observed_tls = TLSMode.TLS
+        desired_replicas = int(spec.get("replicas", 1))
+        if desired_replicas < 1:
+            raise UnsupportedLayoutError("Selected StatefulSet has zero database replicas")
+        layout = _startup_layout(self.adapter, ref, template, mode="full")
+        container_index = layout.container_index
+        container = layout.container
+        container_name = layout.container_name
+        tokens = layout.tokens
+        env_refs = layout.env_references
+        observed_tls = layout.tls_mode
+        certs_dir = layout.certs_dir
+        sql_port = layout.sql_port
+        rpc_port = layout.rpc_port
+        http_port = layout.http_port
+        sql_bind_host = layout.sql_bind_host
+        rpc_bind_host = layout.rpc_bind_host
+        http_bind_host = layout.http_bind_host
+        sql_port_name = layout.sql_port_name
+        rpc_port_name = layout.rpc_port_name
+        http_port_name = layout.http_port_name
+        mounts = layout.mounts
+        secret_fingerprints = layout.secrets
+        advertised_sql_host_template = layout.advertised_sql_host_template
+        advertised_service = layout.advertised_service
+        cluster_domain = layout.cluster_domain
+        literal_advertised_host = layout.literal_advertised_host
+        http_transport = layout.http_transport
 
         service_name = str(spec.get("serviceName", ""))
         if not service_name:
             raise UnsupportedLayoutError("StatefulSet does not declare its governing Service")
-        advertised_sql_host_template, advertised_service, cluster_domain, literal_advertised_host = (
-            _advertised_sql_host_template(flags)
-        )
-        desired_replicas = int(spec.get("replicas", 1))
-        if desired_replicas < 1:
-            raise UnsupportedLayoutError("Selected StatefulSet has zero database replicas")
         selector = _mapping(_mapping(spec.get("selector")).get("matchLabels"))
         template_labels = _mapping(pod_template_metadata.get("labels"))
         if not selector or any(template_labels.get(key) != value for key, value in selector.items()):
@@ -714,8 +1075,13 @@ class WorkloadInspector:
         }
         expected_revision = status.get("updateRevision") or status.get("currentRevision")
         current_revision = status.get("currentRevision")
-        if current_revision and status.get("updateRevision") and current_revision != status.get("updateRevision"):
+        update_revision = status.get("updateRevision")
+        revisions_diverged = bool(current_revision and update_revision and current_revision != update_revision)
+        if revisions_diverged and not allow_image_rollout:
             raise RolloutInProgressError("StatefulSet is rolling between controller revisions")
+        image_rollout_observed = False
+        all_pods_on_update_revision = bool(update_revision)
+        all_pods_match_template = True
         for ordinal in range(desired_replicas):
             pod = pod_by_ordinal[ordinal]
             pod_meta = _metadata(pod)
@@ -727,8 +1093,27 @@ class WorkloadInspector:
             pod_status = _mapping(pod.get("status"))
             if pod_meta.get("deletionTimestamp"):
                 raise RolloutInProgressError("A selected database pod is terminating")
-            startup_mismatches = _startup_mismatches(template, pod, container_name)
+            revision = _mapping(pod_meta.get("labels")).get("controller-revision-hash")
+            known_revisions = {value for value in (current_revision, update_revision) if value}
+            startup_mismatches = _startup_mismatches(
+                template,
+                pod,
+                container_name,
+                allow_image_mismatch=allow_image_rollout,
+            )
+            if revision != update_revision:
+                all_pods_on_update_revision = False
             if startup_mismatches:
+                all_pods_match_template = False
+            image_only_mismatch = (
+                allow_image_rollout
+                and startup_mismatches == ("image",)
+                and bool(revision)
+                and revision in known_revisions
+            )
+            if image_only_mismatch:
+                image_rollout_observed = True
+            if startup_mismatches and not image_only_mismatch:
                 fields = ", ".join(startup_mismatches)
                 raise RolloutInProgressError(
                     f"A live pod differs from its selected StatefulSet startup fields: {fields}"
@@ -752,8 +1137,10 @@ class WorkloadInspector:
                     matches = False
                 if not matches:
                     raise RolloutInProgressError("A live pod volume source differs from the inspected template")
-            revision = _mapping(pod_meta.get("labels")).get("controller-revision-hash")
-            if expected_revision and (not revision or revision != expected_revision):
+            if allow_image_rollout and revisions_diverged:
+                if not revision or revision not in {current_revision, update_revision}:
+                    raise RolloutInProgressError("A live pod is outside the selected image rollout revisions")
+            elif expected_revision and (not revision or revision != expected_revision):
                 raise RolloutInProgressError("A live pod is on a different controller revision")
             container_status = next(
                 (
@@ -793,13 +1180,35 @@ class WorkloadInspector:
                     container_ready=bool(container_status.get("ready", False)),
                     pod_ready=pod_ready,
                     revision=str(revision) if revision else None,
-                    startup_matches_template=True,
+                    image=str(
+                        next(
+                            (
+                                _mapping(item).get("image", "")
+                                for item in _list(pod_spec.get("containers"))
+                                if _mapping(item).get("name") == container_name
+                            ),
+                            "",
+                        )
+                    ),
+                    startup_matches_template=not image_only_mismatch,
                 )
             )
             for volume in _list(pod_spec.get("volumes")):
                 pvc = _mapping(_mapping(volume).get("persistentVolumeClaim"))
                 if pvc.get("claimName"):
                     pvc_names.add(str(pvc["claimName"]))
+
+        completed_revision_rollout = (
+            allow_image_rollout
+            and revisions_diverged
+            and int(status.get("updatedReplicas", 0)) == desired_replicas
+            and all_pods_on_update_revision
+            and all_pods_match_template
+        )
+        if revisions_diverged and not image_rollout_observed and not completed_revision_rollout:
+            raise RolloutInProgressError(
+                "StatefulSet revision rollout is not explained by a selected container image change"
+            )
 
         service_resources = tuple(self.adapter.list_resources("service", ref.namespace))
         governing = next(
@@ -925,6 +1334,7 @@ class WorkloadInspector:
             probe_preservation_hash=_probe_preservation_hash(spec, container_index),
             env_references=env_refs,
             tls_mode=observed_tls,
+            http_transport=http_transport,
             certs_dir=certs_dir,
             sql_port=sql_port,
             rpc_port=rpc_port,

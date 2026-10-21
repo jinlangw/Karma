@@ -11,18 +11,32 @@ TOOLBOX_HELPER=cases/cockroachdb/certificate-rotation/resource/ensure-openssl-to
 TLS_HELPER=cases/cockroachdb/certificate-rotation/resource/ensure-target-tls.sh
 RBAC_MANIFEST=cases/cockroachdb/certificate-rotation/resource/rbac.yaml
 SERVICES_MANIFEST=cases/cockroachdb/certificate-rotation/resource/services.yaml
+SQL_READY_HELPER=cases/cockroachdb/certificate-rotation/resource/sql_ready.py
 
 statefulset_exists() {
   kubectl -n "$NAMESPACE" get statefulset "$CLUSTER_NAME" >/dev/null 2>&1
 }
 
-sql_ready() {
+legacy_sql_ready() {
   host="$CLUSTER_NAME-0.$CLUSTER_NAME.$NAMESPACE.svc.cluster.local"
   kubectl -n "$NAMESPACE" exec "$CLUSTER_NAME-0" -- \
     ./cockroach sql --certs-dir=/cockroach/cockroach-certs --host="$host" -e 'SELECT 1;' \
     >/dev/null 2>&1 ||
     kubectl -n "$NAMESPACE" exec "$CLUSTER_NAME-0" -- \
       ./cockroach sql --insecure --host="$host" -e 'SELECT 1;' >/dev/null 2>&1
+}
+
+sql_ready() {
+  if python3 "$SQL_READY_HELPER" --namespace "$NAMESPACE" \
+    --statefulset "$CLUSTER_NAME" --policy tls-then-insecure >/dev/null 2>&1; then
+    return 0
+  else
+    status=$?
+  fi
+  case "$status" in
+    2|126|127) legacy_sql_ready ;;
+    *) return 1 ;;
+  esac
 }
 
 wait_for_sql() {

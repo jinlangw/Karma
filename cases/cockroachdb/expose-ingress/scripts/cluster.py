@@ -10,6 +10,8 @@ import time
 
 import yaml
 
+from karma.crdb.connections import select_sql_readiness_flag
+
 
 class UnsafeState(RuntimeError):
     """An ownership/configuration conflict that waiting cannot safely repair."""
@@ -111,12 +113,12 @@ class Cluster:
 
     def connection_flag(self):
         if self.flag is None:
-            for flag in ("--certs-dir=/cockroach/cockroach-certs", "--insecure"):
-                if self.sql("SELECT 1;", flag=flag).returncode == 0:
-                    self.flag = flag
-                    break
-            if self.flag is None:
-                raise RuntimeError("selected database is not SQL-ready with TLS or insecure credentials")
+            candidates = ("--certs-dir=/cockroach/cockroach-certs", "--insecure")
+            self.flag = select_sql_readiness_flag(
+                candidates,
+                lambda query, flag: self.sql(query, flag=flag),
+                unavailable_message="selected database is not SQL-ready with TLS or insecure credentials",
+            )
         return self.flag
 
     def service_ready(self, sts):

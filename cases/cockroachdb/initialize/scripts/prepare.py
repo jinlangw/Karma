@@ -2,7 +2,6 @@
 """Three independently verified units, with resumable target-only preparation."""
 import argparse
 import copy
-import hashlib
 import json
 import re
 import shlex
@@ -11,21 +10,15 @@ import sys
 import uuid
 
 from cluster import Cluster, UnsafeState, arguments, database_container, flag_value
+from karma.crdb.security import mounted_secret_signatures
 
 
 def signatures(cluster, template):
-    names = set()
-    for volume in template['spec'].get('volumes', []):
-        if 'secret' in volume:
-            names.add(volume['secret']['secretName'])
-        names |= {s['secret']['name'] for s in volume.get('projected', {}).get('sources', []) if 'secret' in s}
-    result = {}
-    for name in sorted(names):
-        secret = cluster.get('secret', name)
-        if secret is None:
-            raise UnsafeState('mounted Secret is missing')
-        result[name] = {'uid': secret['metadata']['uid'], 'sha256': hashlib.sha256(json.dumps(secret.get('data', {}), sort_keys=True).encode()).hexdigest()}
-    return result
+    return mounted_secret_signatures(
+        template,
+        lambda name: cluster.get('secret', name),
+        error_type=UnsafeState,
+    )
 
 
 def fault_template(template, value):
@@ -97,7 +90,7 @@ class Preparation:
         count = int(data['replicas'])
         if int(sts['spec'].get('replicas', 1)) not in ((0, count) if paused else (count,)):
             raise UnsafeState('selected replica count changed during preparation')
-        if self.cluster.connection_flags() != json.loads(data['connection_flags']):
+        if self.cluster.connection_flags(sts=sts) != json.loads(data['connection_flags']):
             raise UnsafeState('selected security mode or certificate path changed')
         if self.cluster.stores(sts, count) != json.loads(data['stores']):
             raise UnsafeState('selected store configuration or PVC identity changed')
@@ -135,8 +128,8 @@ class Preparation:
             volumes = {v['name']: v.get('persistentVolumeClaim', {}).get('claimName') for v in pod['spec'].get('volumes', [])}
             if any(volumes.get(k) != v for k, v in expected.items()):
                 raise UnsafeState('selected pod does not mount its expected owned claims')
-        if cluster.connection_flags(db)[0] != '--insecure':
-            directory = flag_value(db, '--certs-dir', '/cockroach/cockroach-certs')
+        if cluster.connection_flags(db, sts=sts)[0] != '--insecure':
+            directory = cluster.certificate_directory(db, sts=sts)
             mounts = sorted((m for m in db.get('volumeMounts', []) if directory == m['mountPath'].rstrip('/') or directory.startswith(m['mountPath'].rstrip('/') + '/')), key=lambda m: len(m['mountPath']), reverse=True)
             volumes = {v['name']: v for v in sts['spec']['template']['spec'].get('volumes', [])}
             if not mounts or not any(k in volumes.get(mounts[0]['name'], {}) for k in ('secret', 'projected')):
@@ -234,7 +227,7 @@ class Preparation:
         data = {'statefulset_uid': sts['metadata']['uid'], 'replicas': str(sts['spec'].get('replicas', 1)),
                 'original_template': json.dumps(sts['spec']['template'], sort_keys=True),
                 'original_strategy': json.dumps(sts['spec'].get('updateStrategy', {'type': 'RollingUpdate'}), sort_keys=True),
-                'connection_flags': json.dumps(cluster.connection_flags()), 'stores': json.dumps(stores, sort_keys=True),
+                'connection_flags': json.dumps(cluster.connection_flags(sts=sts)), 'stores': json.dumps(stores, sort_keys=True),
                 'secret_signatures': json.dumps(signatures(cluster, sts['spec']['template']), sort_keys=True),
                 'old_cluster_id': cluster.cluster_id() if state == 'initialized' else '',
                 'nonce': uuid.uuid4().hex[:12], 'phase': 'resetting' if state == 'initialized' else 'uninitialized'}
