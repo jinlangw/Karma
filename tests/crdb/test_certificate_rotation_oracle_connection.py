@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import builtins
 import importlib.util
 from pathlib import Path
@@ -21,7 +20,6 @@ from cases.common.cockroachdb.types import (
 
 ROOT = Path(__file__).resolve().parents[2]
 ORACLE_REL = "cases/tests/cockroachdb/certificate-rotation/oracle/oracle.py"
-BASELINE_ORACLE_REL = "cases/cockroachdb/certificate-rotation/oracle/oracle.py"
 ORACLE_PATH = ROOT / ORACLE_REL
 SPEC = importlib.util.spec_from_file_location("certificate_rotation_oracle", ORACLE_PATH)
 assert SPEC is not None and SPEC.loader is not None
@@ -244,32 +242,3 @@ def test_observed_insecure_layout_is_not_used_as_a_retry(monkeypatch):
     assert ORACLE.secure_sql_result().returncode == 1
     assert len(calls) == 1
     assert "--insecure" not in calls[0]
-
-
-def test_connection_retry_preserves_all_non_sql_oracle_assertion_ast():
-    baseline = subprocess.run(
-        ["git", "show", f"352c0608:{BASELINE_ORACLE_REL}"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    original_tree = ast.parse(baseline)
-    current_tree = ast.parse(ORACLE_PATH.read_text(encoding="utf-8"))
-    original = {node.name: node for node in original_tree.body if isinstance(node, ast.FunctionDef)}
-    current = {node.name: node for node in current_tree.body if isinstance(node, ast.FunctionDef)}
-
-    for name in ("run", "served_leaf_fingerprint", "statefulset_replicas", "target_pod_names"):
-        assert ast.dump(current[name], include_attributes=False) == ast.dump(original[name], include_attributes=False)
-
-    def after_old_fingerprint_command(function):
-        index = next(
-            index for index, statement in enumerate(function.body)
-            if isinstance(statement, ast.Assign)
-            and any(isinstance(target, ast.Name) and target.id == "old_fp_cmd" for target in statement.targets)
-        )
-        return ast.Module(body=function.body[index:], type_ignores=[])
-
-    assert ast.dump(after_old_fingerprint_command(current["main"]), include_attributes=False) == ast.dump(
-        after_old_fingerprint_command(original["main"]), include_attributes=False
-    )

@@ -11,3 +11,5 @@ Keep deliberate policy changes distinct from refactors and explain their effect.
 Separate the two goals: move common operations into the shared library while preserving each case’s behavior, then make behavior changes only for a specific chainability improvement. Document and test each such change independently.
 
 Treat the original case/workflow preconditions and recovery branches as the behavioral baseline; do not change them just to simplify extraction.
+
+For validation scope and when to add tests, follow the [benchmark refactoring guidance](/Users/jimmyouyang/.codex/guidance/benchmark-refactoring.md).
