@@ -6,23 +6,23 @@ import subprocess
 
 import pytest
 
-from karma.crdb.connections import select_sql_readiness_flag
+from cases.common.cockroachdb.connections import select_sql_readiness_flag
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CASE_CLUSTER = ROOT / "cases/cockroachdb/generate-cert/scripts/cluster.py"
+CASE_CLUSTER = ROOT / "cases/tests/cockroachdb/generate-cert/scripts/cluster.py"
 SPEC = importlib.util.spec_from_file_location("generate_cert_cluster_connection_test", CASE_CLUSTER)
 assert SPEC is not None and SPEC.loader is not None
 CASE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CASE)
 
-EXPOSE_PATH = ROOT / "cases/cockroachdb/expose-ingress/scripts/cluster.py"
+EXPOSE_PATH = ROOT / "cases/tests/cockroachdb/expose-ingress/scripts/cluster.py"
 EXPOSE_SPEC = importlib.util.spec_from_file_location("expose_ingress_cluster_connection_test", EXPOSE_PATH)
 assert EXPOSE_SPEC is not None and EXPOSE_SPEC.loader is not None
 EXPOSE_CASE = importlib.util.module_from_spec(EXPOSE_SPEC)
 EXPOSE_SPEC.loader.exec_module(EXPOSE_CASE)
 
-DECOMMISSION_PATH = ROOT / "cases/cockroachdb/decommission/scripts/cluster.py"
+DECOMMISSION_PATH = ROOT / "cases/tests/cockroachdb/decommission/scripts/cluster.py"
 DECOMMISSION_SPEC = importlib.util.spec_from_file_location("decommission_cluster_connection_test", DECOMMISSION_PATH)
 assert DECOMMISSION_SPEC is not None and DECOMMISSION_SPEC.loader is not None
 DECOMMISSION_CASE = importlib.util.module_from_spec(DECOMMISSION_SPEC)

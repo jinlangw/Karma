@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from karma.crdb import startup as startup_module
-from karma.crdb.startup import (
+from cases.common.cockroachdb import startup as startup_module
+from cases.common.cockroachdb.startup import (
     arguments,
     certificate_directory,
     client_connection_flags,
@@ -16,28 +16,28 @@ from karma.crdb.startup import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CASE_CLUSTER = ROOT / "cases/cockroachdb/readonly-audit/scripts/cluster.py"
+CASE_CLUSTER = ROOT / "cases/tests/cockroachdb/readonly-audit/scripts/cluster.py"
 SPEC = importlib.util.spec_from_file_location("readonly_audit_cluster_startup_test", CASE_CLUSTER)
 assert SPEC is not None and SPEC.loader is not None
 CASE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CASE)
 CASE_CLUSTER_PATHS = [
-    "cases/cockroachdb/initialize/scripts/cluster.py",
-    "cases/cockroachdb/major-upgrade-finalize/scripts/cluster.py",
-    "cases/cockroachdb/monitoring-integration/scripts/cluster.py",
-    "cases/cockroachdb/readonly-audit/scripts/cluster.py",
-    "cases/cockroachdb/rollback-rehearsal/scripts/cluster.py",
-    "cases/cockroachdb/version-check/scripts/cluster.py",
-    "cases/cockroachdb/zone-config/scripts/cluster.py",
+    "cases/tests/cockroachdb/initialize/scripts/cluster.py",
+    "cases/tests/cockroachdb/major-upgrade-finalize/scripts/cluster.py",
+    "cases/tests/cockroachdb/monitoring-integration/scripts/cluster.py",
+    "cases/tests/cockroachdb/readonly-audit/scripts/cluster.py",
+    "cases/tests/cockroachdb/rollback-rehearsal/scripts/cluster.py",
+    "cases/tests/cockroachdb/version-check/scripts/cluster.py",
+    "cases/tests/cockroachdb/zone-config/scripts/cluster.py",
 ]
 CERTIFICATE_CASE_PATHS = [
-    "cases/cockroachdb/initialize/scripts/cluster.py",
-    "cases/cockroachdb/major-upgrade-finalize/scripts/cluster.py",
-    "cases/cockroachdb/monitoring-integration/scripts/cluster.py",
-    "cases/cockroachdb/readonly-audit/scripts/cluster.py",
-    "cases/cockroachdb/rollback-rehearsal/scripts/cluster.py",
-    "cases/cockroachdb/version-check/scripts/cluster.py",
-    "cases/cockroachdb/zone-config/scripts/cluster.py",
+    "cases/tests/cockroachdb/initialize/scripts/cluster.py",
+    "cases/tests/cockroachdb/major-upgrade-finalize/scripts/cluster.py",
+    "cases/tests/cockroachdb/monitoring-integration/scripts/cluster.py",
+    "cases/tests/cockroachdb/readonly-audit/scripts/cluster.py",
+    "cases/tests/cockroachdb/rollback-rehearsal/scripts/cluster.py",
+    "cases/tests/cockroachdb/version-check/scripts/cluster.py",
+    "cases/tests/cockroachdb/zone-config/scripts/cluster.py",
 ]
 
 
@@ -270,11 +270,11 @@ def test_readonly_audit_connection_flags_wrapper_keeps_container_selection_and_e
 @pytest.mark.parametrize(
     "relative_path",
     [
-        "cases/cockroachdb/rollback-rehearsal/scripts/cluster.py",
-        "cases/cockroachdb/zone-config/scripts/cluster.py",
-        "cases/cockroachdb/monitoring-integration/scripts/cluster.py",
-        "cases/cockroachdb/version-check/scripts/cluster.py",
-        "cases/cockroachdb/major-upgrade-finalize/scripts/cluster.py",
+        "cases/tests/cockroachdb/rollback-rehearsal/scripts/cluster.py",
+        "cases/tests/cockroachdb/zone-config/scripts/cluster.py",
+        "cases/tests/cockroachdb/monitoring-integration/scripts/cluster.py",
+        "cases/tests/cockroachdb/version-check/scripts/cluster.py",
+        "cases/tests/cockroachdb/major-upgrade-finalize/scripts/cluster.py",
     ],
     ids=["rollback-rehearsal", "zone-config", "monitoring-integration", "version-check", "major-upgrade-finalize"],
 )

@@ -6,13 +6,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from karma.crdb import CrdbLibrary, HTTPTransport, Lifecycle, ProbeStatus, Requirement, TLSMode, WorkloadRef
-from karma.crdb.types import AuthenticationError, MissingResourceError, ProbeObservation
+from cases.common.cockroachdb import CrdbLibrary, HTTPTransport, Lifecycle, ProbeStatus, Requirement, TLSMode, WorkloadRef
+from cases.common.cockroachdb.types import AuthenticationError, MissingResourceError, ProbeObservation
 
 
 SCRIPTS = (
     __file__.rsplit("/tests/crdb/", 1)[0]
-    + "/cases/cockroachdb/health-check-recovery/scripts"
+    + "/cases/tests/cockroachdb/health-check-recovery/scripts"
 )
 
 

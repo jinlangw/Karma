@@ -10,8 +10,8 @@ import time
 
 import yaml
 
-from karma.crdb.connections import select_sql_readiness_flag
-from karma.crdb.security import (
+from cases.common.cockroachdb.connections import select_sql_readiness_flag
+from cases.common.cockroachdb.security import (
     _generate_cert_certificate_directory,
     _generate_cert_database_container,
     _generate_cert_server_arguments,

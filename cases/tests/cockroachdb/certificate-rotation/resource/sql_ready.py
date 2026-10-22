@@ -10,12 +10,12 @@ import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from karma.crdb.types import SQLConnectionObservation
+    from cases.common.cockroachdb.types import SQLConnectionObservation
 
 try:
-    from karma.crdb import CrdbLibrary, KubectlAdapter, WorkloadRef
-    from karma.crdb.connections import select_sql_readiness_flag
-    from karma.crdb.types import CrdbError
+    from cases.common.cockroachdb import CrdbLibrary, KubectlAdapter, WorkloadRef
+    from cases.common.cockroachdb.connections import select_sql_readiness_flag
+    from cases.common.cockroachdb.types import CrdbError
 except ImportError:  # Keep the original shell probe available without the package.
     CrdbLibrary = None  # type: ignore[assignment,misc]
     KubectlAdapter = None  # type: ignore[assignment,misc]

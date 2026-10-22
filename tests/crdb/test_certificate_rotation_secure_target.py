@@ -8,11 +8,11 @@ import subprocess
 
 import pytest
 
-from karma.crdb.types import KubernetesAccessError, StaleIdentityError, UnsupportedLayoutError
+from cases.common.cockroachdb.types import KubernetesAccessError, StaleIdentityError, UnsupportedLayoutError
 
 
 ROOT = Path(__file__).resolve().parents[2]
-HELPER_PATH = ROOT / "cases/cockroachdb/certificate-rotation/resource/secure_target.py"
+HELPER_PATH = ROOT / "cases/tests/cockroachdb/certificate-rotation/resource/secure_target.py"
 SPEC = importlib.util.spec_from_file_location("certificate_rotation_secure_target", HELPER_PATH)
 assert SPEC is not None and SPEC.loader is not None
 HELPER = importlib.util.module_from_spec(SPEC)
@@ -156,7 +156,7 @@ def test_omitted_existing_replica_count_uses_kubernetes_default_of_one():
 
 
 def test_zero_replica_target_uses_the_case_manifest_replica_count():
-    manifest = ROOT / "cases/cockroachdb/certificate-rotation/resource/statefulset.yaml"
+    manifest = ROOT / "cases/tests/cockroachdb/certificate-rotation/resource/statefulset.yaml"
 
     assert HELPER._case_replicas_from_manifest(manifest) == 3
 
@@ -424,7 +424,7 @@ def test_service_check_accepts_empty_zero_replica_target_without_live_pods():
 
 
 def test_render_service_selects_only_requested_original_manifest_document(tmp_path):
-    manifest = ROOT / "cases/cockroachdb/certificate-rotation/resource/services.yaml"
+    manifest = ROOT / "cases/tests/cockroachdb/certificate-rotation/resource/services.yaml"
 
     rendered = HELPER.render_service(manifest, "db-public", "db")
     document = HELPER.yaml.safe_load(rendered)
@@ -482,7 +482,7 @@ def run_tls_apply(tmp_path, *, prepare_status: int, valid_services=""):
         "SERVICE_CHECK_VALID": valid_services,
     }
     result = subprocess.run(
-        ["/bin/sh", str(ROOT / "cases/cockroachdb/certificate-rotation/resource/ensure-target-tls.sh"), "apply"],
+        ["/bin/sh", str(ROOT / "cases/tests/cockroachdb/certificate-rotation/resource/ensure-target-tls.sh"), "apply"],
         cwd=ROOT,
         env=environment,
         check=False,
@@ -500,7 +500,7 @@ def test_apply_preflights_and_preserves_existing_statefulset_instead_of_applying
     assert result.returncode == 0, result.stderr
     assert operations.index("python:prepare") < operations.index("toolbox") < operations.index("python:scale")
     prepare_args = next(line for line in operations if line.startswith("prepare-args:"))
-    assert "--case-manifest cases/cockroachdb/certificate-rotation/resource/statefulset.yaml" in prepare_args
+    assert "--case-manifest cases/tests/cockroachdb/certificate-rotation/resource/statefulset.yaml" in prepare_args
     assert operations.index("apply:rbac") < operations.index("apply:service:db") < operations.index("python:finish")
     assert "apply:service:db-public" in operations
     assert "python:finish" in operations

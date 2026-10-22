@@ -26,6 +26,9 @@ dev = [
 [project.scripts]
 "orchestrator.py" = "karma.interfaces.cli.main:main"
 
+[tool.setuptools]
+include-package-data = false
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["karma*", "cases.common", "cases.common.*"]

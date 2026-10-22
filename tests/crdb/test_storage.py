@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from karma.crdb.storage import pvc_store_mappings
+from cases.common.cockroachdb.storage import pvc_store_mappings
 
 
 class CaseError(RuntimeError):
@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _load_case_cluster(case, monkeypatch):
-    path = ROOT / "cases/cockroachdb" / case / "scripts/cluster.py"
+    path = ROOT / "cases/tests/cockroachdb" / case / "scripts/cluster.py"
     module_name = f"pvc_store_wrapper_{case.replace('-', '_')}"
     spec = importlib.util.spec_from_file_location(module_name, path)
     assert spec and spec.loader

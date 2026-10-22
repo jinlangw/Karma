@@ -1,45 +1,42 @@
 # CockroachDB common library
 
-`karma.crdb` provides a small shared interface for observing an existing
+`cases.common.cockroachdb` provides a small shared interface for observing an existing
 CockroachDB StatefulSet, checking semantic readiness, recording accepted
 state, and preparing its HTTP health probes. It is independent of the
-case-specific implementations under `cases/cockroachdb`; it does not import
+case-specific implementations under `cases/tests/cockroachdb`; it does not import
 them or require a case directory.
 
 Requires Python 3.11 or later. The focused suite was run on Python 3.12.
 
-`karma.crdb.storage.pvc_store_mappings()` shares the legacy CockroachDB store
+`cases.common.cockroachdb.storage.pvc_store_mappings()` shares the legacy CockroachDB store
 flag and claim-template mount-path parsing used by case preparation. It only
 returns volume-name/relative-path mappings; each case still owns PVC lookup,
 identity checks, reset policy, cleanup, and recovery.
 
-`karma.crdb.connections.select_sql_readiness_flag()` shares the fixed
+`cases.common.cockroachdb.connections.select_sql_readiness_flag()` shares the fixed
 `SELECT 1;` candidate loop used by case readiness checks. The case owns its
 ordered connection flags, caching, callback timeout, and unavailable message;
 the helper returns the first successful flag and leaves other readiness,
 Service, task, and recovery checks with the case.
 
-`karma.crdb.health.observe_initialization_state()` measures the configured
+`cases.common.cockroachdb.health.observe_initialization_state()` measures the configured
 HTTP readiness endpoint on one already-observed Pod. It preserves the
 caller-supplied error type for unsupported probe layouts and delegates the
 bounded curl execution to the caller. Its result distinguishes the exact
 CockroachDB deployed-but-uninitialized response from HTTP-ready state; it does
 not establish SQL identity, cluster membership, or whole-cluster health.
 
-`karma.crdb.security.secure_template()` and `insecure_template()` return
+`cases.common.cockroachdb.security.secure_template()` and `insecure_template()` return
 transformed copies of supported CockroachDB StatefulSet templates. The secure
 transform targets secure SQL and HTTPS readiness; the generate-cert inverse
 retains that case's original command parser, certificate-path default, Secret
 mount checks, and HTTPS-to-HTTP probe conversion. These helpers do not apply
 the returned template, scale a StatefulSet, restart Pods, or choose when a
 case should transition TLS modes. The caller owns those decisions and their
-recovery policy. The bounded P039 proof covered one one-node v24.1.0
-secure-template component transition only; it did not run the full
-certificate-rotation workflow, toolbox/CA publication, task oracle, or
-solver.
+recovery policy.
 
 ```python
-from karma.crdb import CrdbLibrary, KubectlAdapter, Lifecycle, Requirement, WorkloadRef
+from cases.common.cockroachdb import CrdbLibrary, KubectlAdapter, Lifecycle, Requirement, WorkloadRef
 
 library = CrdbLibrary(KubectlAdapter())  # uses the current kubectl context
 ref = WorkloadRef("bench-crdb", "db")
@@ -152,7 +149,7 @@ forms remain a no-op and do not roll the StatefulSet. A missing or incorrect
 handler returns false; the caller can then choose the explicit mutator only
 for a workload whose update strategy supports the guarded rollout.
 
-The CLI is available with `python -m karma.crdb`. Actions are `inspect`,
+The CLI is available with `python -m cases.common.cockroachdb`. Actions are `inspect`,
 `probe`, `reconcile`, `capture`, `verify`, `health-endpoint`, and the explicit
 mutating action `prepare-health-probes`. Exit codes are 0 for satisfied, 1
 for unsatisfied, and 2 for typed errors. Accepted snapshots are redacted JSON;
@@ -203,17 +200,8 @@ Run the pytest-based CRDB-focused suite from the repository root with:
 PYTHONDONTWRITEBYTECODE=1 python3.12 -m pytest -q tests/crdb
 ```
 
-`unittest discover` does not collect all of the function-based CRDB tests.
-The bounded one-node library experiment passed for insecure and TLS fixtures.
-The health-recovery case passed sequential insecure and TLS proofs, and the
-zone-config case passed an inherited TLS policy-carryover proof on a native
-three-node v24.1.0 fixture. The zone proof showed serving/full health remained
-satisfied with zero unavailable and under-replicated counts; it does not
-demonstrate positive under-replication, fresh bootstrap, task-oracle behavior,
-or a solver workflow. Experiment scopes and results are documented in
-[`experiments/crdb-common-library/README.md`](../../experiments/crdb-common-library/README.md)
-and [`RESULTS.md`](../../experiments/crdb-common-library/RESULTS.md), plus
-[`experiments/crdb-case-migration/README.md`](../../experiments/crdb-case-migration/README.md).
+`unittest discover` does not collect all function-based CRDB tests; use
+`pytest` to run the focused suite.
 
 ## Existing workflow validation
 

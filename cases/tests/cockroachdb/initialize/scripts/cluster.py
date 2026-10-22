@@ -1,4 +1,4 @@
-"""Case-local inspection and connection handling for monitoring preparation."""
+"""Selected deployment inspection, with positive pre-initialization detection."""
 import csv
 import io
 import json
@@ -9,22 +9,14 @@ import subprocess
 import time
 
 import yaml
-from karma.crdb import CrdbLibrary, KubectlAdapter, ProbeStatus, WorkloadRef
-from karma.crdb.health import observe_initialization_state
-from karma.crdb.storage import pvc_store_mappings
-from karma.crdb.types import (
-    AuthenticationError,
-    KubernetesAccessError,
-    StaleIdentityError,
-    UnsupportedLayoutError,
-)
-from karma.crdb.startup import (
+from cases.common.cockroachdb.startup import (
     arguments as _startup_arguments,
     certificate_directory as _startup_certificate_directory,
-    client_connection_flags as _startup_client_connection_flags,
     database_container as _startup_database_container,
     flag_value as _startup_flag_value,
 )
+from cases.common.cockroachdb.health import observe_initialization_state
+from cases.common.cockroachdb.storage import pvc_store_mappings
 
 
 class UnsafeState(RuntimeError):
@@ -44,10 +36,9 @@ def flag_value(container, name, default=None):
 
 
 class Cluster:
-    def __init__(self, library=None):
+    def __init__(self):
         self.namespace = os.environ['BENCH_NAMESPACE']
         self.name = os.environ.get('BENCH_PARAM_CLUSTER_NAME', 'crdb-cluster')
-        self._crdb_library = library or CrdbLibrary(KubectlAdapter())
         for value in (self.namespace, self.name):
             if len(value) > 63 or not re.fullmatch(r'[a-z0-9]([-a-z0-9]*[a-z0-9])?', value):
                 raise ValueError('namespace and cluster_name must be DNS labels')
@@ -106,20 +97,31 @@ class Cluster:
             result.append(pod)
         return result
 
-    def connection_flags(self, container=None):
-        container = container or database_container(self.statefulset()['spec']['template'])
-        return _startup_client_connection_flags(
-            container,
-            certificate_directory=lambda: self.certificate_directory(container),
-            error_type=UnsafeState,
-        )
+    def connection_flags(self, container=None, sts=None):
+        if container is None:
+            sts = sts or self.statefulset()
+            container = database_container(sts['spec']['template'])
+        tokens = arguments(container)
+        insecure = '--insecure' in tokens or '--insecure=true' in tokens
+        if insecure:
+            flags = ['--insecure']
+        else:
+            configured_directory = flag_value(container, '--certs-dir')
+            directory = (
+                configured_directory
+                if configured_directory is not None
+                else self.certificate_directory(container, sts=sts)
+            )
+            flags = ['--certs-dir=' + directory]
+        name = flag_value(container, '--cluster-name')
+        return flags + (['--cluster-name=' + name] if name else [])
 
-    def certificate_directory(self, container):
-        directory = flag_value(container, '--certs-dir')
+    def certificate_directory(self, container, sts=None):
+        configured_directory = flag_value(container, '--certs-dir')
         return _startup_certificate_directory(
             container,
-            directory,
-            pod_security_context=lambda: self.statefulset()['spec']['template']['spec'].get('securityContext', {}),
+            configured_directory,
+            pod_security_context=lambda: (sts or self.statefulset())['spec']['template']['spec'].get('securityContext', {}),
             error_type=UnsafeState,
         )
 
@@ -127,66 +129,28 @@ class Cluster:
         sts = sts or self.statefulset()
         return f'{self.name}-{ordinal}.{sts["spec"]["serviceName"]}.{self.namespace}.svc.cluster.local'
 
-    def executable(self, container):
-        tokens = arguments(container)
-        if tokens and tokens[0] == 'exec': tokens = tokens[1:]
-        first = tokens[0] if tokens else 'start'
-        if first == 'start': return '/cockroach/cockroach'
-        if first == 'cockroach' or first.endswith('/cockroach'): return first
-        raise UnsafeState('selected server executable is unsupported')
-
-    def client(self, *command, ordinal=0, timeout=10):
+    def client(self, *command, ordinal=0):
         sts = self.statefulset()
         db = database_container(sts['spec']['template'])
         port = flag_value(db, '--sql-addr', flag_value(db, '--listen-addr', flag_value(db, '--port', '26257'))).rsplit(':', 1)[-1]
         if command == ('init',):
             port = flag_value(db, '--listen-addr', flag_value(db, '--port', '26257')).rsplit(':', 1)[-1]
-            return self.kubectl('exec', f'{self.name}-{ordinal}', '-c', db['name'], '--', self.executable(db), 'init',
-                                *self.connection_flags(db), '--host=' + self.host(ordinal, sts) + ':' + port, timeout=15)
-        return self.kubectl('exec', f'{self.name}-{ordinal}', '-c', db['name'], '--', self.executable(db), *command,
-                            *self.connection_flags(db), '--host=' + self.host(ordinal, sts), '--port=' + port,
-                            '--format=csv', timeout=timeout)
+            return self.kubectl('exec', f'{self.name}-{ordinal}', '-c', db['name'], '--', './cockroach', 'init',
+                                *self.connection_flags(db, sts=sts),
+                                '--host=' + self.host(ordinal, sts) + ':' + port, timeout=15)
+        return self.kubectl('exec', f'{self.name}-{ordinal}', '-c', db['name'], '--', './cockroach', *command,
+                            *self.connection_flags(db, sts=sts),
+                            '--host=' + self.host(ordinal, sts), '--port=' + port,
+                            '--format=csv', timeout=10)
 
-    def sql(self, query, ordinal=0, timeout=10):
-        return self.client('sql', '-e', query, ordinal=ordinal, timeout=timeout)
+    def sql(self, query, ordinal=0):
+        return self.client('sql', '-e', query, ordinal=ordinal)
 
     def cluster_id(self, ordinal=0):
         rows = list(csv.reader(io.StringIO(self.require(self.sql('SELECT crdb_internal.cluster_id();', ordinal)))))
         if len(rows) != 2 or len(rows[1]) != 1 or not re.fullmatch(r'[0-9a-fA-F-]{36}', rows[1][0]):
             raise RuntimeError('invalid database cluster identity')
         return rows[1][0]
-
-    def value(self, query, ordinal=0):
-        rows = list(csv.reader(io.StringIO(self.require(self.sql(query, ordinal)))))
-        if not rows or len(rows) > 2 or len(rows[0]) != 1:
-            raise RuntimeError('expected a single SQL value')
-        return rows[1][0] if len(rows) == 2 and rows[1] else ''
-
-    def setting(self, name, ordinal=0):
-        if not re.fullmatch(r'[a-z_][a-z0-9_.]*', name):
-            raise ValueError('invalid cluster setting name')
-        return self.value('SHOW CLUSTER SETTING ' + name + ';', ordinal)
-
-    def ready(self):
-        if self.deployment_ready() != 'initialized':
-            raise RuntimeError('selected database is not initialized')
-        sts = self.statefulset()
-        if int(sts['spec'].get('replicas', 1)) < 1:
-            raise RuntimeError('selected workload has no running nodes')
-        for pod in self.pods(sts):
-            if not any(c.get('type') == 'Ready' and c.get('status') == 'True' for c in pod['status'].get('conditions', [])):
-                raise RuntimeError('selected database pod is not Ready')
-        try:
-            health = self._crdb_library.probe_full_health(
-                WorkloadRef(self.namespace, self.name), per_node_timeout=5
-            )
-        except (AuthenticationError, KubernetesAccessError, StaleIdentityError, UnsupportedLayoutError) as error:
-            # Access, identity, and observation-contract failures are not evidence
-            # that resetting the selected stores is appropriate.
-            raise UnsafeState(str(error)) from error
-        if health.status is not ProbeStatus.SATISFIED:
-            raise RuntimeError('selected database has unavailable or under-replicated ranges: ' + '; '.join(health.reasons))
-        return True
 
     def node_state(self, pod):
         def execute_curl(pod_name, container_name, argv, timeout):
@@ -202,8 +166,8 @@ class Cluster:
 
     def deployment_ready(self):
         sts = self.statefulset()
-        if int(sts['spec'].get('replicas', 1)) < 1:
-            raise RuntimeError('selected workload has no configured nodes')
+        if int(sts['spec'].get('replicas', 1)) < 2 or sts['spec'].get('podManagementPolicy') != 'Parallel':
+            raise UnsafeState('initialization reset requires at least two nodes and Parallel pod management')
         database_container(sts['spec']['template'])
         self.services_ready(sts)
         states = [self.node_state(p) for p in self.pods(sts)]
@@ -215,7 +179,7 @@ class Cluster:
         if states[0] == 'initialized':
             identities = [self.cluster_id(i) for i in range(len(states))]
             if len(set(identities)) != 1:
-                raise RuntimeError('selected nodes belong to different databases')
+                raise UnsafeState('selected nodes belong to different databases')
         return states[0]
 
     def services_ready(self, sts):
@@ -282,18 +246,14 @@ class Cluster:
         for filename in ('rbac.yaml', 'services.yaml', 'statefulset.yaml'):
             text = (directory / filename).read_text()
             for key, value in {'BENCH_NAMESPACE': self.namespace, 'BENCH_PARAM_CLUSTER_NAME': self.name,
-                               'BENCH_PARAM_UNUSED_FROM_VERSION': '24.1'}.items():
+                               'BENCH_PARAM_CRDB_VERSION': os.environ.get('BENCH_PARAM_CRDB_VERSION', '24.1.0')}.items():
                 text = text.replace('${' + key + '}', value)
             for obj in yaml.safe_load_all(text):
                 if obj['kind'] == 'StatefulSet':
                     obj['spec']['replicas'] = int(os.environ.get('BENCH_PARAM_REPLICA_COUNT', '3'))
-                    if obj['spec']['replicas'] < 1:
-                        raise UnsafeState('monitoring requires at least one node')
+                    if obj['spec']['replicas'] < 2:
+                        raise UnsafeState('initialization task requires at least two nodes')
                     db = database_container(obj['spec']['template'])
-                    metrics_port = int(os.environ.get('BENCH_PARAM_METRICS_PORT', '8080'))
-                    db['command'][2] = db['command'][2].replace('0.0.0.0:8080', '0.0.0.0:' + str(metrics_port))
-                    for port in db.get('ports', []):
-                        if port.get('name') == 'http': port['containerPort'] = metrics_port
                     join = ','.join(self.host(i, obj) + ':26257' for i in range(min(3, obj['spec']['replicas'])))
                     db['command'][2] = re.sub(r'--join=\S+', '--join=' + join, db['command'][2])
                 existing = self.get(obj['kind'], obj['metadata']['name'])

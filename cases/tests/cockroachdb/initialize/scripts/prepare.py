@@ -10,7 +10,7 @@ import sys
 import uuid
 
 from cluster import Cluster, UnsafeState, arguments, database_container, flag_value
-from karma.crdb.security import mounted_secret_signatures
+from cases.common.cockroachdb.security import mounted_secret_signatures
 
 
 def signatures(cluster, template):

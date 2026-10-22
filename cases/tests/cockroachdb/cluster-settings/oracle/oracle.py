@@ -15,8 +15,8 @@ import subprocess
 import sys
 import time
 
-from karma.crdb import CrdbLibrary, KubectlAdapter, TLSMode, WorkloadRef
-from karma.crdb.types import CrdbError, UnsupportedLayoutError
+from cases.common.cockroachdb import CrdbLibrary, KubectlAdapter, TLSMode, WorkloadRef
+from cases.common.cockroachdb.types import CrdbError, UnsupportedLayoutError
 
 
 NAMESPACE = os.environ["BENCH_NAMESPACE"]

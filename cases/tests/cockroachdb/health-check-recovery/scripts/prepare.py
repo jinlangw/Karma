@@ -6,8 +6,8 @@ import sys
 
 from cluster import FAULT_MARKER, Cluster, UnsafeState, database_container
 from fault import Fault
-from karma.crdb import CrdbLibrary, KubectlAdapter, Lifecycle, ProbeStatus, Requirement, WorkloadRef
-from karma.crdb.types import (
+from cases.common.cockroachdb import CrdbLibrary, KubectlAdapter, Lifecycle, ProbeStatus, Requirement, WorkloadRef
+from cases.common.cockroachdb.types import (
     AuthenticationError,
     InvalidRequirementError,
     KubernetesAccessError,

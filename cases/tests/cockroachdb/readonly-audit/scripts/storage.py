@@ -4,7 +4,7 @@ import re
 import shlex
 
 from cluster import UnsafeState, database_container
-from karma.crdb.security import mounted_secret_signatures
+from cases.common.cockroachdb.security import mounted_secret_signatures
 
 
 def signatures(cluster, template):

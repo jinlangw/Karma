@@ -10,7 +10,7 @@ import time
 
 import yaml
 
-from karma.crdb.connections import select_sql_readiness_flag
+from cases.common.cockroachdb.connections import select_sql_readiness_flag
 
 
 class UnsafeState(RuntimeError):

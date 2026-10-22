@@ -15,7 +15,7 @@ from typing import Any
 
 import yaml
 
-from karma.crdb import (
+from cases.common.cockroachdb import (
     CrdbError,
     CrdbLibrary,
     KubectlAdapter,
@@ -23,7 +23,7 @@ from karma.crdb import (
     TLSMode,
     WorkloadRef,
 )
-from karma.crdb.types import (
+from cases.common.cockroachdb.types import (
     AuthenticationError,
     ConnectionError,
     KubernetesAccessError,

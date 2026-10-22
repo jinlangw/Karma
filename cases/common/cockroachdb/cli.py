@@ -15,7 +15,7 @@ from .types import AcceptedState, CrdbError, Lifecycle, Requirement, TLSMode, Wo
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m karma.crdb", description="Inspect and verify an existing CockroachDB workload.")
+    parser = argparse.ArgumentParser(prog="python -m cases.common.cockroachdb", description="Inspect and verify an existing CockroachDB workload.")
     parser.add_argument(
         "action",
         choices=("inspect", "probe", "reconcile", "capture", "verify", "health-endpoint", "prepare-health-probes"),

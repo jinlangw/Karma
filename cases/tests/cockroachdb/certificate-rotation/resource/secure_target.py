@@ -16,10 +16,10 @@ from string import Template
 
 import yaml
 
-from karma.crdb import KubectlAdapter, secure_template
-from karma.crdb.security import _parse_startup
-from karma.crdb.startup import database_container
-from karma.crdb.types import CrdbError, StaleIdentityError, UnsupportedLayoutError
+from cases.common.cockroachdb import KubectlAdapter, secure_template
+from cases.common.cockroachdb.security import _parse_startup
+from cases.common.cockroachdb.startup import database_container
+from cases.common.cockroachdb.types import CrdbError, StaleIdentityError, UnsupportedLayoutError
 
 
 _REQUIRED_SERVICE_PORTS = {26257: "sql", 8080: "http"}

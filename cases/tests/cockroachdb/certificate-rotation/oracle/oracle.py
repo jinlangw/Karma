@@ -46,8 +46,8 @@ def _observed_tls_sql_result():
     as permission to use insecure SQL.
     """
     try:
-        from karma.crdb import CrdbError, CrdbLibrary, KubectlAdapter, TLSMode, WorkloadRef
-        from karma.crdb.connections import select_sql_readiness_flag
+        from cases.common.cockroachdb import CrdbError, CrdbLibrary, KubectlAdapter, TLSMode, WorkloadRef
+        from cases.common.cockroachdb.connections import select_sql_readiness_flag
     except ImportError:
         return None
 

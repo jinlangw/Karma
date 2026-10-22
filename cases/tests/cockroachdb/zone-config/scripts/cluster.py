@@ -11,11 +11,11 @@ from urllib.parse import urlencode
 
 import yaml
 
-from karma.crdb import CrdbLibrary, KubectlAdapter, ProbeStatus, WorkloadRef
-from karma.crdb.health import observe_initialization_state
-from karma.crdb.storage import pvc_store_mappings
-from karma.crdb.types import AuthenticationError, KubernetesAccessError, StaleIdentityError, UnsupportedLayoutError
-from karma.crdb.startup import (
+from cases.common.cockroachdb import CrdbLibrary, KubectlAdapter, ProbeStatus, WorkloadRef
+from cases.common.cockroachdb.health import observe_initialization_state
+from cases.common.cockroachdb.storage import pvc_store_mappings
+from cases.common.cockroachdb.types import AuthenticationError, KubernetesAccessError, StaleIdentityError, UnsupportedLayoutError
+from cases.common.cockroachdb.startup import (
     arguments as _startup_arguments,
     certificate_directory as _startup_certificate_directory,
     client_connection_flags as _startup_client_connection_flags,

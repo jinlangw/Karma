@@ -166,7 +166,7 @@ pytest tests/integration   # requires a reachable cluster
   Benchmark corpus. Each testcase lives under `cases/tests/<service>/<case>/test.yaml`.
 
 - `cases/common/`
-  Shared case helpers for RabbitMQ, Ray, and Spark.
+  Shared case helpers for CockroachDB, RabbitMQ, Ray, and Spark.
 
 - `workflows/`
   Multi-stage workflow definitions built from reusable testcases.

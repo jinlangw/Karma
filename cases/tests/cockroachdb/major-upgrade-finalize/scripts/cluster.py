@@ -9,15 +9,15 @@ import subprocess
 import time
 
 import yaml
-from karma.crdb.startup import (
+from cases.common.cockroachdb.startup import (
     arguments as _startup_arguments,
     certificate_directory as _startup_certificate_directory,
     client_connection_flags as _startup_client_connection_flags,
     database_container as _startup_database_container,
     flag_value as _startup_flag_value,
 )
-from karma.crdb.health import observe_initialization_state
-from karma.crdb.storage import pvc_store_mappings
+from cases.common.cockroachdb.health import observe_initialization_state
+from cases.common.cockroachdb.storage import pvc_store_mappings
 
 
 class UnsafeState(RuntimeError):

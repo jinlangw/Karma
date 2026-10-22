@@ -8,17 +8,17 @@ import textwrap
 
 import pytest
 
-from karma.crdb.types import (
+from cases.common.cockroachdb.types import (
     KubernetesAccessError,
     SQLConnectionObservation,
     TLSMode,
     UnsupportedLayoutError,
 )
-from karma.crdb import CrdbLibrary
+from cases.common.cockroachdb import CrdbLibrary
 
 
 ROOT = Path(__file__).resolve().parents[2]
-HELPER_PATH = ROOT / "cases/cockroachdb/certificate-rotation/resource/sql_ready.py"
+HELPER_PATH = ROOT / "cases/tests/cockroachdb/certificate-rotation/resource/sql_ready.py"
 SPEC = importlib.util.spec_from_file_location("certificate_rotation_sql_ready", HELPER_PATH)
 assert SPEC is not None and SPEC.loader is not None
 HELPER = importlib.util.module_from_spec(SPEC)
@@ -30,8 +30,8 @@ assert LIBRARY_SPEC is not None and LIBRARY_SPEC.loader is not None
 LIBRARY_TEST = importlib.util.module_from_spec(LIBRARY_SPEC)
 LIBRARY_SPEC.loader.exec_module(LIBRARY_TEST)
 
-CLUSTER_SCRIPT = ROOT / "cases/cockroachdb/certificate-rotation/resource/ensure-target-cluster.sh"
-TLS_SCRIPT = ROOT / "cases/cockroachdb/certificate-rotation/resource/ensure-target-tls.sh"
+CLUSTER_SCRIPT = ROOT / "cases/tests/cockroachdb/certificate-rotation/resource/ensure-target-cluster.sh"
+TLS_SCRIPT = ROOT / "cases/tests/cockroachdb/certificate-rotation/resource/ensure-target-tls.sh"
 DEFAULT_CERTS = "/cockroach/cockroach-certs"
 
 
