@@ -8,8 +8,8 @@ import subprocess
 
 import pytest
 
-import karma.crdb as crdb
-from karma.crdb.types import (
+import cases.common.cockroachdb as crdb
+from cases.common.cockroachdb.types import (
     AuthenticationError,
     KubernetesAccessError,
     SQLConnectionObservation,
@@ -20,7 +20,8 @@ from karma.crdb.types import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
-ORACLE_REL = "cases/cockroachdb/certificate-rotation/oracle/oracle.py"
+ORACLE_REL = "cases/tests/cockroachdb/certificate-rotation/oracle/oracle.py"
+BASELINE_ORACLE_REL = "cases/cockroachdb/certificate-rotation/oracle/oracle.py"
 ORACLE_PATH = ROOT / ORACLE_REL
 SPEC = importlib.util.spec_from_file_location("certificate_rotation_oracle", ORACLE_PATH)
 assert SPEC is not None and SPEC.loader is not None
@@ -104,7 +105,7 @@ def test_legacy_sql_success_does_not_import_or_query_shared_observer(monkeypatch
     original_import = builtins.__import__
 
     def reject_library_import(name, *args, **kwargs):
-        if name == "karma.crdb" or name.startswith("karma.crdb."):
+        if name == "cases.common.cockroachdb" or name.startswith("cases.common.cockroachdb."):
             raise AssertionError("the legacy-success path must not import the shared observer")
         return original_import(name, *args, **kwargs)
 
@@ -247,7 +248,7 @@ def test_observed_insecure_layout_is_not_used_as_a_retry(monkeypatch):
 
 def test_connection_retry_preserves_all_non_sql_oracle_assertion_ast():
     baseline = subprocess.run(
-        ["git", "show", f"352c0608:{ORACLE_REL}"],
+        ["git", "show", f"352c0608:{BASELINE_ORACLE_REL}"],
         cwd=ROOT,
         check=True,
         capture_output=True,

@@ -1,0 +1,85 @@
+# cockroachdb/certificate-rotation
+# Rotate TLS certificates for a running CockroachDB cluster with ~1 year validity
+
+prompt: |
+  Rotate the TLS certificates for the CockroachDB StatefulSet
+  {{params.cluster_name}} in Kubernetes namespace ${BENCH_NAMESPACE}; do not
+  assume a fixed namespace name. Its TLS Secret is named
+  {{params.cluster_name}}-certs. Update only this cluster and Secret; do not
+  modify other CockroachDB clusters or Secrets in the namespace.
+  Use the existing CA rather than replacing it. The CA key and certificate are
+  available in the openssl-toolbox pod at /tmp/certs/ca.key and /tmp/certs/ca.crt.
+  Aim for about one year of validity for the renewed node certificate. Keep the
+  cluster healthy and ensure secure SQL connections continue to work after the
+  rotation. Submit when the node certificate has been replaced and the cluster
+  remains operational.
+
+params:
+  cluster_name:
+    default: crdb-cluster
+    description: CockroachDB StatefulSet name; its TLS Secret is <cluster_name>-certs
+
+namespace_contract:
+  required_roles:
+    - default
+
+metrics:
+  - time_to_first_mutation
+  - destructive_ops
+
+preconditionUnits:
+  - name: ensure_target_cluster_ready
+    on_probe_fail: skip
+    probe:
+      - command: "sh cases/tests/cockroachdb/certificate-rotation/resource/ensure-target-cluster.sh probe"
+        timeout_sec: 240
+    apply:
+      - command: "sh cases/tests/cockroachdb/certificate-rotation/resource/ensure-target-cluster.sh apply"
+        timeout_sec: 1800
+    verify:
+      - command: "sh cases/tests/cockroachdb/certificate-rotation/resource/ensure-target-cluster.sh verify"
+        timeout_sec: 20
+
+  - name: ensure_openssl_toolbox
+    on_probe_fail: skip
+    probe:
+      - command: "sh cases/tests/cockroachdb/certificate-rotation/resource/ensure-openssl-toolbox.sh probe"
+        timeout_sec: 30
+    apply:
+      - command: "sh cases/tests/cockroachdb/certificate-rotation/resource/ensure-openssl-toolbox.sh apply"
+        timeout_sec: 420
+    verify:
+      - command: "sh cases/tests/cockroachdb/certificate-rotation/resource/ensure-openssl-toolbox.sh verify"
+        timeout_sec: 30
+
+  - name: ensure_target_tls
+    on_probe_fail: skip
+    probe:
+      - command: "sh cases/tests/cockroachdb/certificate-rotation/resource/ensure-target-tls.sh probe"
+        timeout_sec: 90
+    apply:
+      - command: "sh cases/tests/cockroachdb/certificate-rotation/resource/ensure-target-tls.sh apply"
+        timeout_sec: 1200
+    verify:
+      - command: "sh cases/tests/cockroachdb/certificate-rotation/resource/ensure-target-tls.sh verify"
+        timeout_sec: 20
+
+  - name: ensure_cert_baseline
+    on_probe_fail: skip
+    probe:
+      - command: "sh cases/tests/cockroachdb/certificate-rotation/resource/ensure-cert-baseline.sh probe"
+        timeout_sec: 30
+    apply:
+      - command: "sh cases/tests/cockroachdb/certificate-rotation/resource/ensure-cert-baseline.sh apply"
+        timeout_sec: 60
+    verify:
+      - command: "sh cases/tests/cockroachdb/certificate-rotation/resource/ensure-cert-baseline.sh verify"
+        timeout_sec: 20
+
+oracle:
+  verify:
+    commands:
+      # 240s: allow the oracle's all-node served-cert convergence check (O37)
+      # plus the remaining fingerprint, validity, and SQL checks (O21).
+      - command: "python3 cases/tests/cockroachdb/certificate-rotation/oracle/oracle.py"
+        timeout_sec: 240

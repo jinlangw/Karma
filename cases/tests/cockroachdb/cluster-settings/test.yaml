@@ -1,0 +1,58 @@
+# cockroachdb/cluster-settings
+# Update {{params.setting_name}} to {{params.setting_value}} and make it persist
+
+prompt: |
+  Update the CockroachDB cluster setting {{params.setting_name}} to
+  {{params.setting_value}} on StatefulSet {{params.cluster_name}} in
+  namespace ${BENCH_NAMESPACE}.
+
+  The setting must persist across a node restart. Preserve the cluster's
+  existing security configuration and keep it healthy.
+
+  If the requested setting was renamed in the running CockroachDB version,
+  update its equivalent supported setting.
+
+params:
+  cluster_name:
+    default: crdb-cluster
+    description: CockroachDB StatefulSet name identifying the target cluster
+  setting_name:
+    default: kv.snapshot_rebalance.max_rate
+    description: CockroachDB cluster setting to update for rebalancing throughput
+  setting_value:
+    default: 128MiB
+    description: Target value the agent must set the cluster setting to
+
+namespace_contract:
+  required_roles: [default]
+
+metrics:
+  - time_to_first_mutation
+  - read_write_ratio
+
+preconditionUnits:
+  - name: crdb_env_ready
+    on_probe_fail: skip
+    probe:
+      # Reuse only the selected StatefulSet once SQL works, in either TLS mode.
+      # Allow an inherited cluster time to start before triggering recovery.
+      - command: "python3 cases/tests/cockroachdb/cluster-settings/resource/ensure-target-cluster.py probe"
+        timeout_sec: 210
+    apply:
+      # Restart an unhealthy target first; rebuild only that cluster if needed.
+      # The helper never creates or deletes the framework-managed namespace.
+      - command: "python3 cases/tests/cockroachdb/cluster-settings/resource/ensure-target-cluster.py apply"
+        timeout_sec: 1800
+    verify:
+      - command: "python3 cases/tests/cockroachdb/cluster-settings/resource/ensure-target-cluster.py verify"
+        timeout_sec: 150
+
+oracle:
+  verify:
+    commands:
+      # O-deadline: the oracle deletes the target's pod 0 and waits for it to recover
+      # Allow 120s pre-settle, 180s delete, 300s post-delete wait, both SQL-read
+      # retry windows and bounded TLS/non-TLS detection. Leave headroom so a
+      # slow inherited node can recover before the oracle prints its verdict.
+      - command: "python3 cases/tests/cockroachdb/cluster-settings/oracle/oracle.py"
+        timeout_sec: 900

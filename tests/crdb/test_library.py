@@ -13,9 +13,9 @@ import unittest
 from typing import Any
 from unittest.mock import patch
 
-from karma.crdb import CrdbLibrary, HTTPTransport, KubectlAdapter, Lifecycle, ProbeStatus, Requirement, TLSMode, WorkloadRef
-from karma.crdb.adapter import HttpHealthResponse
-from karma.crdb.types import (
+from cases.common.cockroachdb import CrdbLibrary, HTTPTransport, KubectlAdapter, Lifecycle, ProbeStatus, Requirement, TLSMode, WorkloadRef
+from cases.common.cockroachdb.adapter import HttpHealthResponse
+from cases.common.cockroachdb.types import (
     AuthenticationError,
     ConnectionError,
     ErrorCode,
@@ -287,7 +287,7 @@ class MemoryAdapter:
         }.get(kind, ())
 
     def secret_fingerprint(self, namespace: str, name: str):
-        from karma.crdb.types import SecretFingerprint, MissingResourceError
+        from cases.common.cockroachdb.types import SecretFingerprint, MissingResourceError
 
         self.fingerprint_calls.append(name)
         if self.fingerprint_error is not None:
@@ -1869,7 +1869,7 @@ class LibraryTests(unittest.TestCase):
             self.assertEqual(adapter.patch_calls, [])
 
     def test_requirement_types_and_dns_identities_are_validated(self):
-        from karma.crdb.types import InvalidRequirementError
+        from cases.common.cockroachdb.types import InvalidRequirementError
 
         with self.assertRaises(InvalidRequirementError):
             Requirement(Lifecycle.DEPLOYED, minimum_nodes=True)
@@ -1879,7 +1879,7 @@ class LibraryTests(unittest.TestCase):
             Requirement("deployed")
 
     def test_observation_and_cli_never_expose_startup_or_multiline_env_secrets(self):
-        from karma.crdb.cli import main
+        from cases.common.cockroachdb.cli import main
 
         adapter = MemoryAdapter()
         container = adapter.sts["spec"]["template"]["spec"]["containers"][0]
@@ -1894,14 +1894,14 @@ class LibraryTests(unittest.TestCase):
         self.assertNotIn("quoted private token", repr(observation))
         self.assertNotIn("private-key-body-91c0", repr(observation))
         cli_out = io.StringIO()
-        with patch("karma.crdb.cli.KubectlAdapter", return_value=adapter), contextlib.redirect_stdout(cli_out):
+        with patch("cases.common.cockroachdb.cli.KubectlAdapter", return_value=adapter), contextlib.redirect_stdout(cli_out):
             self.assertEqual(main(["inspect", "--namespace", adapter.namespace, "--statefulset", adapter.name]), 0)
         self.assertNotIn("private-value", cli_out.getvalue())
         self.assertNotIn("quoted private token", cli_out.getvalue())
         self.assertNotIn("private-key-body-91c0", cli_out.getvalue())
 
     def test_probe_sql_interface_rejects_arbitrary_statements(self):
-        from karma.crdb.types import InvalidRequirementError
+        from cases.common.cockroachdb.types import InvalidRequirementError
 
         adapter = KubectlAdapter()
         with self.assertRaises(UnsupportedLayoutError):
@@ -1913,8 +1913,8 @@ class LibraryTests(unittest.TestCase):
             )
 
     def test_read_only_witness_has_stable_csv_aliases(self):
-        from karma.crdb.adapter import _READ_ONLY_SQL
-        from karma.crdb.library import _WITNESS_SQL, _parse_witness
+        from cases.common.cockroachdb.adapter import _READ_ONLY_SQL
+        from cases.common.cockroachdb.library import _WITNESS_SQL, _parse_witness
 
         self.assertEqual(_WITNESS_SQL, _READ_ONLY_SQL)
         self.assertEqual(
@@ -1934,10 +1934,10 @@ class LibraryTests(unittest.TestCase):
 
 class CliTests(unittest.TestCase):
     def test_cli_capture_verify_roundtrip_and_exit_codes(self):
-        from karma.crdb.cli import main
+        from cases.common.cockroachdb.cli import main
 
         adapter = MemoryAdapter()
-        with patch("karma.crdb.cli.KubectlAdapter", return_value=adapter):
+        with patch("cases.common.cockroachdb.cli.KubectlAdapter", return_value=adapter):
             with tempfile.TemporaryDirectory() as tempdir:
                 state_file = f"{tempdir}/accepted.json"
                 capture_out = io.StringIO()
@@ -2043,7 +2043,7 @@ class KubectlAdapterTests(unittest.TestCase):
         self.assertNotIn("private-material", str(secure))
 
     def test_sql_command_uses_explicit_insecure_endpoint_and_fixed_read_only_query(self):
-        from karma.crdb.adapter import _READ_ONLY_SQL
+        from cases.common.cockroachdb.adapter import _READ_ONLY_SQL
 
         adapter = KubectlAdapter()
         success = subprocess.CompletedProcess(args=[], returncode=0, stdout="cluster_id,node_id,version\n", stderr="")
@@ -2064,7 +2064,7 @@ class KubectlAdapterTests(unittest.TestCase):
         )
 
     def test_full_health_adapter_uses_sql_port_for_fixed_status_and_liveness_reads(self):
-        from karma.crdb.adapter import _READ_ONLY_LIVENESS_SQL
+        from cases.common.cockroachdb.adapter import _READ_ONLY_LIVENESS_SQL
 
         adapter = KubectlAdapter()
         success = subprocess.CompletedProcess(args=[], returncode=0, stdout="id,membership\n", stderr="")
@@ -2115,7 +2115,7 @@ class KubectlAdapterTests(unittest.TestCase):
         )
         node = subprocess.CompletedProcess(args=[], returncode=0, stdout='{"nodeId":7}\n200', stderr="")
         cluster = subprocess.CompletedProcess(args=[], returncode=0, stdout=f'{{"clusterId":"{_CLUSTER_ID}"}}\n200', stderr="")
-        with patch("karma.crdb.adapter.subprocess.run", side_effect=[session, node, cluster]) as run:
+        with patch("cases.common.cockroachdb.adapter.subprocess.run", side_effect=[session, node, cluster]) as run:
             identity = adapter.native_identity(
                 namespace="ns",
                 pod_name="db-0",
@@ -2168,7 +2168,7 @@ class KubectlAdapterTests(unittest.TestCase):
                 response = subprocess.CompletedProcess(
                     args=[], returncode=0, stdout=f'{{"secret":"private-{status}"}}\n{status}', stderr=""
                 )
-                with patch("karma.crdb.adapter.subprocess.run", side_effect=[login, response]) as run:
+                with patch("cases.common.cockroachdb.adapter.subprocess.run", side_effect=[login, response]) as run:
                     with self.assertRaises(error_type) as raised:
                         adapter.native_identity(
                             namespace="ns", pod_name="db-0", pod_uid="pod-a", container_name="db",
@@ -2189,7 +2189,7 @@ class KubectlAdapterTests(unittest.TestCase):
         response = subprocess.CompletedProcess(
             args=[], returncode=0, stdout='{"private":"malformed-body-sentinel"\n200', stderr=""
         )
-        with patch("karma.crdb.adapter.subprocess.run", side_effect=[login, response]) as run:
+        with patch("cases.common.cockroachdb.adapter.subprocess.run", side_effect=[login, response]) as run:
             with self.assertRaises(ConnectionError) as raised:
                 adapter.native_identity(
                     namespace="ns", pod_name="db-0", pod_uid="pod-a", container_name="db",
@@ -2213,7 +2213,7 @@ class KubectlAdapterTests(unittest.TestCase):
             "sql_port": 26257, "certs_dir": "/certs", "auth_scope": "scope", "timeout": 2,
         }
         with patch.object(adapter, "_exec", return_value=login) as login_call, patch(
-            "karma.crdb.adapter.time.monotonic", side_effect=[100.0, 131.0, 200.0, 201.0]
+            "cases.common.cockroachdb.adapter.time.monotonic", side_effect=[100.0, 131.0, 200.0, 201.0]
         ):
             first = adapter._session_cookie(**common, pod_uid="pod-a")
             self.assertEqual(first, "session=slow-login-cookie")
@@ -2263,7 +2263,7 @@ class KubectlAdapterTests(unittest.TestCase):
         sentinel = "private-session-token-4fd2"
         inner = ["curl", "--config", "-", "http://localhost:8080/_admin/v1/cluster"]
         with patch(
-            "karma.crdb.adapter.subprocess.run",
+            "cases.common.cockroachdb.adapter.subprocess.run",
             side_effect=subprocess.TimeoutExpired(["kubectl", "exec", *inner], 1, output=sentinel, stderr=sentinel),
         ):
             with self.assertRaises(TransientError) as raised:
@@ -2271,14 +2271,14 @@ class KubectlAdapterTests(unittest.TestCase):
         rendered = "".join(traceback.format_exception(raised.exception))
         self.assertNotIn(sentinel, rendered)
 
-        with patch("karma.crdb.adapter.subprocess.run", side_effect=OSError(sentinel)):
+        with patch("cases.common.cockroachdb.adapter.subprocess.run", side_effect=OSError(sentinel)):
             with self.assertRaises(KubernetesAccessError) as raised_os:
                 adapter._exec_with_input("ns", "db-0", "db", inner, 1, "native identity", f'header = "Cookie: session={sentinel}"\n')
         rendered_os = "".join(traceback.format_exception(raised_os.exception))
         self.assertNotIn(sentinel, rendered_os)
 
     def test_native_session_cookie_parser_accepts_attributes_and_rejects_config_injection(self):
-        from karma.crdb.adapter import KubectlAdapter
+        from cases.common.cockroachdb.adapter import KubectlAdapter
 
         self.assertEqual(
             KubectlAdapter._parse_session_cookie("session=abc_DEF-123; Path=/; HttpOnly; SameSite=Strict"),
@@ -2305,7 +2305,7 @@ class KubectlAdapterTests(unittest.TestCase):
         self.assertNotIn("--insecure", argv)
 
     def test_native_version_selection_boundary_is_semver_based(self):
-        from karma.crdb.library import _requires_native_identity, _server_version_tuple
+        from cases.common.cockroachdb.library import _requires_native_identity, _server_version_tuple
 
         self.assertEqual(_server_version_tuple("CockroachDB CCL v26.1.8 (linux)") , (26, 1, 8))
         self.assertFalse(_requires_native_identity("CockroachDB CCL v26.0.9"))
@@ -2318,7 +2318,7 @@ class KubectlAdapterTests(unittest.TestCase):
         failed = subprocess.CompletedProcess(
             args=[], returncode=1, stdout="", stderr="error: context gone not found"
         )
-        with patch("karma.crdb.adapter.subprocess.run", return_value=failed) as run:
+        with patch("cases.common.cockroachdb.adapter.subprocess.run", return_value=failed) as run:
             with self.assertRaises(KubernetesAccessError):
                 adapter.get_resource("statefulset", "ns", "db")
         self.assertIn("--ignore-not-found=true", run.call_args.args[0])
@@ -2339,7 +2339,7 @@ class KubectlAdapterTests(unittest.TestCase):
             {"op": "test", "path": "/metadata/resourceVersion", "value": "1"},
             {"op": "remove", "path": "/spec/template/spec/containers/0/livenessProbe/exec"},
         ]
-        with patch("karma.crdb.adapter.subprocess.run", return_value=success) as run:
+        with patch("cases.common.cockroachdb.adapter.subprocess.run", return_value=success) as run:
             result = adapter.patch_statefulset_json(
                 namespace="ns", name="db", uid="uid", resource_version="1", operations=operations, timeout=2
             )

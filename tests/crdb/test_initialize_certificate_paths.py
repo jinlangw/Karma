@@ -10,7 +10,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CASE_DIR = ROOT / "cases/cockroachdb/initialize/scripts"
+CASE_DIR = ROOT / "cases/tests/cockroachdb/initialize/scripts"
 
 
 def load_case_modules():

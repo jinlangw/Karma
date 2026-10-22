@@ -7,18 +7,18 @@ import subprocess
 
 import pytest
 
-from karma.crdb.health import observe_initialization_state
+from cases.common.cockroachdb.health import observe_initialization_state
 
 
 ROOT = Path(__file__).resolve().parents[2]
 CASE_PATHS = [
-    "cases/cockroachdb/initialize/scripts/cluster.py",
-    "cases/cockroachdb/major-upgrade-finalize/scripts/cluster.py",
-    "cases/cockroachdb/readonly-audit/scripts/cluster.py",
-    "cases/cockroachdb/rollback-rehearsal/scripts/cluster.py",
-    "cases/cockroachdb/zone-config/scripts/cluster.py",
-    "cases/cockroachdb/version-check/scripts/cluster.py",
-    "cases/cockroachdb/monitoring-integration/scripts/cluster.py",
+    "cases/tests/cockroachdb/initialize/scripts/cluster.py",
+    "cases/tests/cockroachdb/major-upgrade-finalize/scripts/cluster.py",
+    "cases/tests/cockroachdb/readonly-audit/scripts/cluster.py",
+    "cases/tests/cockroachdb/rollback-rehearsal/scripts/cluster.py",
+    "cases/tests/cockroachdb/zone-config/scripts/cluster.py",
+    "cases/tests/cockroachdb/version-check/scripts/cluster.py",
+    "cases/tests/cockroachdb/monitoring-integration/scripts/cluster.py",
 ]
 
 

@@ -13,12 +13,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from karma.crdb import CrdbLibrary, ProbeStatus
+from cases.common.cockroachdb import CrdbLibrary, ProbeStatus
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS = ROOT / "cases/cockroachdb/rollback-rehearsal/scripts"
-RESOURCE = ROOT / "cases/cockroachdb/rollback-rehearsal/resource"
+SCRIPTS = ROOT / "cases/tests/cockroachdb/rollback-rehearsal/scripts"
+RESOURCE = ROOT / "cases/tests/cockroachdb/rollback-rehearsal/resource"
 
 
 @pytest.fixture

@@ -1,6 +1,6 @@
 # Adding A Test Case
 
-This guide focuses on authoring canonical `cases/**/test.yaml` cases that work
+This guide focuses on authoring canonical `cases/tests/**/test.yaml` cases that work
 in both:
 
 - Single-case mode
@@ -111,7 +111,7 @@ preconditionUnits:
       - command: "kubectl -n ${BENCH_NAMESPACE} get configmap demo-config"
         timeout_sec: 20
     apply:
-      - command: "kubectl -n ${BENCH_NAMESPACE} apply -f cases/demo/configmap-update/resource/config.yaml"
+      - command: "kubectl -n ${BENCH_NAMESPACE} apply -f cases/tests/demo/configmap-update/resource/config.yaml"
         timeout_sec: 20
     verify:
       - command: "kubectl -n ${BENCH_NAMESPACE} get configmap demo-config"
@@ -120,7 +120,7 @@ preconditionUnits:
 oracle:
   verify:
     commands:
-      - command: "python3 cases/demo/configmap-update/oracle/oracle.py --expected-value {{params.target_value}}"
+      - command: "python3 cases/tests/demo/configmap-update/oracle/oracle.py --expected-value {{params.target_value}}"
         timeout_sec: 20
 ```
 
@@ -282,7 +282,7 @@ Whitelist only the intended variables:
 
 ```bash
 envsubst '${BENCH_NAMESPACE} ${BENCH_PARAM_TARGET_PORT}' \
-  < cases/service/case/resource/manifest.yaml |
+  < cases/tests/service/case/resource/manifest.yaml |
   kubectl apply -f -
 ```
 
@@ -369,11 +369,11 @@ Some oracles need a temporary client pod. Use:
 oracle:
   verify:
     before_commands:
-      - command: "kubectl -n ${BENCH_NAMESPACE} apply -f cases/service/common/oracle-client.yaml"
+      - command: "kubectl -n ${BENCH_NAMESPACE} apply -f cases/common/rabbitmq/oracle-client.yaml"
     commands:
-      - command: "python3 cases/service/case/oracle/oracle.py"
+      - command: "python3 cases/tests/<service>/<case>/oracle/oracle.py"
     after_commands:
-      - command: "kubectl -n ${BENCH_NAMESPACE} delete -f cases/service/common/oracle-client.yaml --ignore-not-found=true"
+      - command: "kubectl -n ${BENCH_NAMESPACE} delete -f cases/common/rabbitmq/oracle-client.yaml --ignore-not-found=true"
     after_failure_mode: warn
 ```
 

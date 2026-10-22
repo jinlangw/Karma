@@ -11,14 +11,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from karma.crdb import secure_template
-from karma.crdb.security import insecure_template, mounted_secret_signatures
-from karma.crdb.types import UnsupportedLayoutError
+from cases.common.cockroachdb import secure_template
+from cases.common.cockroachdb.security import insecure_template, mounted_secret_signatures
+from cases.common.cockroachdb.types import UnsupportedLayoutError
 
 
 CERT_DIR = "/cockroach/cockroach-certs"
 ROOT = Path(__file__).resolve().parents[2]
-CASE_CLUSTER = ROOT / "cases/cockroachdb/generate-cert/scripts/cluster.py"
+CASE_CLUSTER = ROOT / "cases/tests/cockroachdb/generate-cert/scripts/cluster.py"
 CASE_SPEC = importlib.util.spec_from_file_location("generate_cert_security_test", CASE_CLUSTER)
 assert CASE_SPEC is not None and CASE_SPEC.loader is not None
 CASE = importlib.util.module_from_spec(CASE_SPEC)
@@ -546,7 +546,7 @@ def test_mounted_secret_signatures_empty_template_does_not_call_getter():
 
 
 def _load_case_signature_module(case: str, monkeypatch):
-    scripts = ROOT / "cases/cockroachdb" / case / "scripts"
+    scripts = ROOT / "cases/tests/cockroachdb" / case / "scripts"
     monkeypatch.syspath_prepend(str(scripts))
     cluster_spec = importlib.util.spec_from_file_location(
         f"p044_cluster_{case.replace('-', '_')}", scripts / "cluster.py"

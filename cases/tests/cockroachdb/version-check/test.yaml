@@ -1,0 +1,112 @@
+# Read the active feature version from a healthy, held newer-binary cluster.
+prompt: |
+  Determine the CURRENT active feature version of CockroachDB StatefulSet
+  {{params.cluster_name}} in namespace ${BENCH_NAMESPACE} and record it in a ConfigMap.
+  This is a read-only task: preserve database settings, finalization holds, workload
+  configuration, storage and TLS material. Do not upgrade or finalize the cluster.
+  The running binary/image version and active feature version are different concepts.
+
+  Inspect the selected workload's startup configuration to discover its SQL port
+  and connection mode. Use its mounted client certificates when TLS is enabled.
+  Query SHOW CLUSTER SETTING version; to determine the active feature version.
+  SELECT version(); reports the running binary instead.
+
+  Compute this stage's report name:
+    version_id=$(printf '%s' "${BENCH_NAMESPACE}/{{params.cluster_name}}/${BENCH_RUN_ID}/${BENCH_STAGE_ID}" | shasum -a 256 | cut -c1-20)
+    report_name="{{params.report_configmap_name}}-${version_id}"
+  Create that ConfigMap in ${BENCH_NAMESPACE}, with the active feature version as
+  plain text under key {{params.report_key}} and labels:
+    app.kubernetes.io/name: cockroachdb
+    app.kubernetes.io/instance: {{params.cluster_name}}
+    karma.dev/fixture: version-check
+    karma.dev/version-id: <version_id>
+
+  Preserve earlier reports and the framework's encrypted baseline. Submit a readable
+  value obtained from the live database. Creating this stage's report is the only
+  permitted mutation.
+params:
+  cluster_name:
+    default: crdb-cluster
+    description: CockroachDB StatefulSet name
+  from_version:
+    default: '23.2'
+    description: Fallback source family or exact patch; used only to create missing/broken environments
+      or reset unsupported version states
+  to_version:
+    default: 24.1.0
+    description: Fallback compatible newer-family binary patch; legacy same-family pairs are bootstrap hints and resolve
+      to the next documented family
+  report_configmap_name:
+    default: crdb-version-report
+    description: Prefix for the report name; cluster/run/stage identity supplies a unique suffix
+  report_key:
+    default: db_version
+    description: ConfigMap key under which the version is recorded
+namespace_contract:
+  required_roles:
+  - default
+metrics:
+- time_to_first_mutation
+preconditionUnits:
+- name: crdb_env_ready
+  on_probe_fail: skip
+  probe:
+  - command: python3 cases/tests/cockroachdb/version-check/scripts/prepare.py environment probe
+    trusted_stdin: stage_key
+    timeout_sec: 300
+  apply:
+  - command: python3 cases/tests/cockroachdb/version-check/scripts/prepare.py environment apply
+    trusted_stdin: stage_key
+    timeout_sec: 1200
+  verify:
+  - command: python3 cases/tests/cockroachdb/version-check/scripts/prepare.py environment verify
+    trusted_stdin: stage_key
+    timeout_sec: 300
+- name: crdb_feature_version_gap_ready
+  on_probe_fail: skip
+  probe:
+  - command: python3 cases/tests/cockroachdb/version-check/scripts/prepare.py gap probe
+    trusted_stdin: stage_key
+    timeout_sec: 300
+  apply:
+  - command: python3 cases/tests/cockroachdb/version-check/scripts/prepare.py gap apply
+    trusted_stdin: stage_key
+    timeout_sec: 2400
+  verify:
+  - command: python3 cases/tests/cockroachdb/version-check/scripts/prepare.py gap verify
+    trusted_stdin: stage_key
+    timeout_sec: 300
+- name: crdb_version_report_absent
+  on_probe_fail: skip
+  probe:
+  - command: python3 cases/tests/cockroachdb/version-check/scripts/prepare.py report probe
+    trusted_stdin: stage_key
+    timeout_sec: 60
+  apply:
+  - command: python3 cases/tests/cockroachdb/version-check/scripts/prepare.py report apply
+    trusted_stdin: stage_key
+    timeout_sec: 60
+  verify:
+  - command: python3 cases/tests/cockroachdb/version-check/scripts/prepare.py report verify
+    trusted_stdin: stage_key
+    timeout_sec: 60
+- name: crdb_version_baseline_ready
+  on_probe_fail: skip
+  probe:
+  - command: python3 cases/tests/cockroachdb/version-check/scripts/prepare.py baseline probe
+    trusted_stdin: stage_key
+    timeout_sec: 300
+  apply:
+  - command: python3 cases/tests/cockroachdb/version-check/scripts/prepare.py baseline apply
+    trusted_stdin: stage_key
+    timeout_sec: 300
+  verify:
+  - command: python3 cases/tests/cockroachdb/version-check/scripts/prepare.py baseline verify
+    trusted_stdin: stage_key
+    timeout_sec: 300
+oracle:
+  verify:
+    commands:
+    - command: python3 cases/tests/cockroachdb/version-check/oracle/oracle.py
+      trusted_stdin: stage_key
+      timeout_sec: 300

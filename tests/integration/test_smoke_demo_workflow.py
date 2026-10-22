@@ -14,13 +14,13 @@ from karma.definitions.workflows import (
 )
 
 _REPO_ROOT = Path(__file__).parent.parent.parent
-_RESOURCES_DIR = _REPO_ROOT / "cases"
+_RESOURCES_DIR = _REPO_ROOT / "cases" / "tests"
 _WORKFLOWS_DIR = _REPO_ROOT / "workflows"
 
 
 @pytest.mark.skipif(
     not _RESOURCES_DIR.exists(),
-    reason="cases/ directory not present in this environment",
+    reason="cases/tests/ directory not present in this environment",
 )
 class TestDemoWorkflowSmoke:
     def _find_demo_workflow(self) -> Path | None:

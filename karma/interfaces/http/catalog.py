@@ -40,6 +40,7 @@ from ...definitions.workflows import (
     load_workflow_file, normalize_workflow, resolve_workflow_rows,
     parse_and_normalize_workflow,
 )
+from ...settings import top_level_adversaries_dir
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -572,9 +573,10 @@ def list_adversary_scenarios(resources_dir: Path) -> list[dict[str, Any]]:
     """Return the adversary scenarios available to the UI.
 
     Scenarios live in the top-level ``adversaries/{service}/{scenario}/
-    scenario.yaml`` tree (a sibling of *resources_dir*); the legacy
-    ``cases/{service}/adversarial/{scenario}/`` location is still scanned
-    as a fallback. Each entry carries the owning service, scenario name, file
+    scenario.yaml`` tree for the built-in corpus; custom resource roots use
+    their sibling adversaries directory. The legacy in-resources
+    ``{service}/adversarial/{scenario}/`` location is still scanned as a
+    fallback. Each entry carries the owning service, scenario name, file
     path, a cheap ``has_lift`` flag, declared prompt hints, and the param
     declarations (name/default/description) so the adversary panel and the
     workflow injection editor can describe them without re-parsing.
@@ -583,7 +585,7 @@ def list_adversary_scenarios(resources_dir: Path) -> list[dict[str, Any]]:
 
     # (service_root, is_legacy) pairs: the top-level adversaries/ tree first,
     # then the legacy in-resources layout. Each yields service subdirectories.
-    roots: list[tuple[Path, bool]] = [(resources_dir.parent / "adversaries", False)]
+    roots: list[tuple[Path, bool]] = [(top_level_adversaries_dir(resources_dir), False)]
     if resources_dir.exists():
         roots.append((resources_dir, True))
 
