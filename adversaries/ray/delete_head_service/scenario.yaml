@@ -40,7 +40,7 @@ lift:
       timeout_sec: 10
   apply:
     - command: >-
-        kubectl -n {{params.namespace}} apply -f cases/ray/deploy_cluster/resource/ray-head-service.yaml
+        kubectl -n {{params.namespace}} apply -f cases/tests/ray/deploy_cluster/resource/ray-head-service.yaml
       timeout_sec: 20
   verify:
     - command: "kubectl -n {{params.namespace}} get service {{params.service_name}}"

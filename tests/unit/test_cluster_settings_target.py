@@ -13,8 +13,8 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from karma.crdb import KubectlAdapter, SQLConnectionObservation, TLSMode
-from karma.crdb.types import (
+from cases.common.cockroachdb import KubectlAdapter, SQLConnectionObservation, TLSMode
+from cases.common.cockroachdb.types import (
     AuthenticationError,
     ConnectionError,
     KubernetesAccessError,
@@ -25,7 +25,7 @@ from karma.crdb.types import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "cases/cockroachdb/cluster-settings/resource/ensure-target-cluster.py"
+SCRIPT = ROOT / "cases/tests/cockroachdb/cluster-settings/resource/ensure-target-cluster.py"
 
 
 @pytest.fixture
@@ -747,7 +747,7 @@ def test_persistently_missing_pods_reach_case_recreate_without_a_late_observatio
 
 
 def test_cluster_settings_readiness_query_is_a_fixed_sql_allowlist_entry(monkeypatch):
-    import karma.crdb.adapter as adapter_module
+    import cases.common.cockroachdb.adapter as adapter_module
 
     calls = []
 

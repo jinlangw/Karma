@@ -447,7 +447,7 @@ def test_resolve_workflow_carries_namespace_binding(tmp_path):
             "namespace_binding": {"source": "cluster_a", "target": "cluster_b"},
         }]},
     }
-    norm = normalize_workflow(raw, resources_dir=Path("cases"))
+    norm = normalize_workflow(raw, resources_dir=Path("cases/tests"))
     assert norm["stages"][0]["namespace_binding"] == {"source": "cluster_a", "target": "cluster_b"}
-    rows = resolve_workflow_rows(norm, resources_dir=Path("cases"))
+    rows = resolve_workflow_rows(norm, resources_dir=Path("cases/tests"))
     assert rows[0]["namespace_binding"] == {"source": "cluster_a", "target": "cluster_b"}

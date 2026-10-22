@@ -17,6 +17,20 @@ def _parse(argv):
 
 
 class TestSubcommandParsing:
+    def test_resource_roots_default_to_nested_builtin_and_allow_direct_custom_root(self):
+        commands = [
+            ["run-workflow", "workflows/suite/workflow-demo.yaml"],
+            ["run-case", "demo", "configmap-update"],
+            ["run-batch", "--all"],
+            ["manual", "demo", "configmap-update"],
+        ]
+        assert [
+            _parse(argv).resources_dir for argv in commands
+        ] == ["cases/tests"] * len(commands)
+        assert _parse([
+            "run-case", "demo", "configmap-update", "--resources-dir", "custom-root"
+        ]).resources_dir == "custom-root"
+
     def test_run_case_all_flags(self):
         ns = _parse([
             "run-case", "demo", "configmap-update", "--agent", "claude_code",

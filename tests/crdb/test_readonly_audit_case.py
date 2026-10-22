@@ -13,11 +13,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from karma.crdb import CrdbLibrary, ProbeStatus, TLSMode
+from cases.common.cockroachdb import CrdbLibrary, ProbeStatus, TLSMode
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS = ROOT / "cases/cockroachdb/readonly-audit/scripts"
+SCRIPTS = ROOT / "cases/tests/cockroachdb/readonly-audit/scripts"
 
 
 @pytest.fixture

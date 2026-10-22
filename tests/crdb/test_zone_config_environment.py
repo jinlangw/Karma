@@ -10,12 +10,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from karma.crdb import CrdbLibrary, ProbeStatus
-from karma.crdb.types import KubernetesAccessError
+from cases.common.cockroachdb import CrdbLibrary, ProbeStatus
+from cases.common.cockroachdb.types import KubernetesAccessError
 from tests.crdb.test_library import MemoryAdapter
 
 
-SCRIPTS = Path(__file__).resolve().parents[2] / "cases/cockroachdb/zone-config/scripts"
+SCRIPTS = Path(__file__).resolve().parents[2] / "cases/tests/cockroachdb/zone-config/scripts"
 
 
 @pytest.fixture

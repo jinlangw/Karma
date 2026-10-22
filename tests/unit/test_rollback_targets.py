@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-path = Path(__file__).resolve().parents[2] / 'cases/cockroachdb/rollback-rehearsal/scripts/targets.py'
+path = Path(__file__).resolve().parents[2] / 'cases/tests/cockroachdb/rollback-rehearsal/scripts/targets.py'
 spec = importlib.util.spec_from_file_location('rollback_targets', path)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)

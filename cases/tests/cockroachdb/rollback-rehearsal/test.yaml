@@ -1,0 +1,122 @@
+# Prepare an exact, scoped rollback from inherited state; execute only on an oracle fixture.
+prompt: |
+  Inspect CockroachDB StatefulSet {{params.cluster_name}} in ${BENCH_NAMESPACE}.
+  Prepare a POSIX shell script to roll back ONLY these two field types:
+    1. kv.snapshot_rebalance.max_rate, if its current value differs from its default.
+    2. Explicit gc.ttlseconds overrides on user DATABASE/TABLE zones (excluding system),
+       if the override differs from the effective GC TTL of RANGE default.
+  Include only the rollback targets discovered in this original cluster. Preserve
+  every other setting, zone field, object, data, replica count, version and TLS material.
+
+  Discover the snapshot-rate default on this running version using:
+    SELECT crdb_internal.cluster_setting_encoded_default('kv.snapshot_rebalance.max_rate');
+  The result is bytes. Read the exact current byte value with:
+    SELECT COALESCE((SELECT value::INT8 FROM system.settings
+      WHERE name='kv.snapshot_rebalance.max_rate'),
+      crdb_internal.cluster_setting_encoded_default('kv.snapshot_rebalance.max_rate')::INT8);
+  SHOW CLUSTER SETTING rounds byte values and must not determine exact equality.
+  Inspect explicit zone overrides using the database_name, schema_name, table_name
+  and raw_config_yaml columns of crdb_internal.zones (subzone_id=0).
+  Read RANGE default's effective GC TTL from full_config_yaml.
+  If rollback is needed, RESET CLUSTER SETTING resets the snapshot rate. For zones,
+  use field-level gc.ttlseconds=COPY FROM PARENT. Reset DATABASE targets before
+  TABLE targets so tables receive their parent's value AFTER rollback. This copies
+  the current parent value; it does not remove the entire zone configuration.
+
+  Do NOT execute the script on the original cluster. Only submit it for review.
+  The oracle executes it on a separate, disposable cluster using the same image
+  and security mode, with relevant database/schema/table names reproduced.
+
+  Script requirements:
+  - Start with #!/bin/sh and enable fail-fast behavior (set -eu).
+  - Accept namespace as $1 and StatefulSet name as $2; use these arguments for all
+    Kubernetes commands. The validation namespace and StatefulSet name are random.
+  - Discover the passed target's existing SQL connection mode/certificate directory
+    and port at execution time. Both TLS and insecure targets are supported.
+  - Revert only the specific targets identified during original-cluster inspection.
+    Other configuration/data on the validation target may differ and must be preserved.
+  - Never discard an entire zone or reset unrelated settings. Do not change workloads,
+    replicas, versions, TLS, storage or data. Verify the target still serves SQL.
+  - The runner provides /bin/sh, kubectl, sed, grep and jq; no host files or admin
+    credentials are available. Kubernetes permissions cover only the temporary fixture.
+
+  Save rollback.sh in a ConfigMap in ${BENCH_NAMESPACE}. Its name is
+  crdb-rollback-<id>, where <id> is the first 20 hexadecimal characters of SHA-256
+  over this exact UTF-8 string (no trailing newline):
+    ${BENCH_NAMESPACE}/{{params.cluster_name}}/${BENCH_RUN_ID}/${BENCH_STAGE_ID}
+  Create that ConfigMap with key rollback.sh. Preserve the encrypted framework
+  baseline and all earlier stage artifacts. Only this script ConfigMap may be created
+  by you on the original cluster; all live database configuration must stay unchanged.
+
+params:
+  cluster_name:
+    default: crdb-cluster
+    description: CockroachDB StatefulSet identifying the original cluster
+
+namespace_contract:
+  required_roles: [default]
+
+metrics:
+  - time_to_first_mutation
+
+preconditionUnits:
+  - name: crdb_env_ready
+    on_probe_fail: skip
+    probe:
+      - command: python3 cases/tests/cockroachdb/rollback-rehearsal/scripts/prepare.py environment probe
+        timeout_sec: 180
+    apply:
+      - command: python3 cases/tests/cockroachdb/rollback-rehearsal/scripts/prepare.py environment apply
+        timeout_sec: 1200
+    verify:
+      - command: python3 cases/tests/cockroachdb/rollback-rehearsal/scripts/prepare.py environment verify
+        timeout_sec: 180
+
+  - name: crdb_rollback_targets_ready
+    on_probe_fail: skip
+    probe:
+      - command: python3 cases/tests/cockroachdb/rollback-rehearsal/scripts/prepare.py targets probe
+        trusted_stdin: stage_key
+        timeout_sec: 180
+    apply:
+      - command: python3 cases/tests/cockroachdb/rollback-rehearsal/scripts/prepare.py targets apply
+        trusted_stdin: stage_key
+        timeout_sec: 180
+    verify:
+      - command: python3 cases/tests/cockroachdb/rollback-rehearsal/scripts/prepare.py targets verify
+        trusted_stdin: stage_key
+        timeout_sec: 180
+
+  - name: crdb_rollback_script_absent
+    on_probe_fail: skip
+    probe:
+      - command: python3 cases/tests/cockroachdb/rollback-rehearsal/scripts/prepare.py script probe
+        timeout_sec: 30
+    apply:
+      - command: python3 cases/tests/cockroachdb/rollback-rehearsal/scripts/prepare.py script apply
+        timeout_sec: 30
+    verify:
+      - command: python3 cases/tests/cockroachdb/rollback-rehearsal/scripts/prepare.py script verify
+        timeout_sec: 30
+
+  - name: crdb_rollback_baseline_ready
+    on_probe_fail: skip
+    probe:
+      - command: python3 cases/tests/cockroachdb/rollback-rehearsal/scripts/prepare.py baseline probe
+        trusted_stdin: stage_key
+        timeout_sec: 60
+    apply:
+      - command: python3 cases/tests/cockroachdb/rollback-rehearsal/scripts/prepare.py baseline apply
+        trusted_stdin: stage_key
+        timeout_sec: 240
+    verify:
+      - command: python3 cases/tests/cockroachdb/rollback-rehearsal/scripts/prepare.py baseline verify
+        trusted_stdin: stage_key
+        timeout_sec: 60
+
+oracle:
+  verify:
+    commands:
+      - command: python3 cases/tests/cockroachdb/rollback-rehearsal/oracle/oracle.py
+        trusted_stdin: stage_key
+        timeout_sec: 900

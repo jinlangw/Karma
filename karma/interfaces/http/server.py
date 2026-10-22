@@ -548,7 +548,7 @@ def main(
     import os
 
     resolved_resources = resources_dir or Path(
-        os.environ.get("KARMA_RESOURCES_DIR", "cases")
+        os.environ.get("KARMA_RESOURCES_DIR", "cases/tests")
     )
     resolved_runs = runs_dir or Path(os.environ.get("KARMA_RUNS_DIR", "runs"))
     resolved_workflows = Path(os.environ.get("KARMA_WORKFLOWS_DIR", "workflows"))

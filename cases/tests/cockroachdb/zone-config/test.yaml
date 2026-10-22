@@ -1,0 +1,134 @@
+# cockroachdb/zone-config
+prompt: 'A CockroachDB cluster is running in namespace ${BENCH_NAMESPACE}
+
+  (StatefulSet {{params.cluster_name}}). Tenant tables are in defaultdb:
+
+  - {{params.protected_schema}}.* belongs to Tenant A (protected)
+
+  - {{params.target_schema}}.* belongs to Tenant B (target)
+
+
+  Apply these zone values to every ordinary table in {{params.target_schema}}:
+
+  - num_replicas = {{params.num_replicas}}
+
+  - gc.ttlseconds = {{params.gc_ttl_seconds}}
+
+  - range_min_bytes = {{params.range_min_bytes}}
+
+  - range_max_bytes = {{params.range_max_bytes}}
+
+
+  Preserve all existing tables and data. Preserve Tenant A''s existing zone
+
+  configurations, including any custom settings. Preserve shared parent policies,
+
+  index/partition policies, all other databases and unrequested target-table fields.
+
+  Do not change the workload, node count, versions, certificates or baseline.
+
+
+  Inspect the selected workload''s startup flags for its SQL port and TLS mode.
+
+  Use mounted client certificates for TLS; use --insecure only in insecure mode.
+
+  Discover the actual table names; inherited tables may use different names.
+
+  Use SHOW TABLES FROM <schema> and SHOW ZONE CONFIGURATION FOR TABLE <table>.
+
+  ALTER TABLE <table> CONFIGURE ZONE USING ... changes a table policy.
+
+  The framework''s encrypted baseline is reserved for verification.
+
+  '
+params:
+  cluster_name:
+    default: crdb-cluster
+    description: CockroachDB StatefulSet name
+  target_schema:
+    default: tenant_b
+    description: Schema whose tables receive the new zone configuration
+  protected_schema:
+    default: tenant_a
+    description: Schema whose tables must NOT have their zone config modified
+  num_replicas:
+    default: 3
+    description: Replication factor to set in the zone configuration
+  gc_ttl_seconds:
+    default: 14400
+    description: GC TTL (seconds) to set in the zone configuration
+  range_min_bytes:
+    default: 134217728
+    description: Minimum range size (bytes) in the zone configuration
+  range_max_bytes:
+    default: 536870912
+    description: Maximum range size (bytes) in the zone configuration
+namespace_contract:
+  required_roles:
+  - default
+metrics:
+- time_to_first_mutation
+- read_write_ratio
+preconditionUnits:
+- name: crdb_env_ready
+  on_probe_fail: skip
+  probe:
+  - command: python3 cases/tests/cockroachdb/zone-config/scripts/prepare.py environment probe
+    trusted_stdin: stage_key
+    timeout_sec: 300
+  apply:
+  - command: python3 cases/tests/cockroachdb/zone-config/scripts/prepare.py environment apply
+    trusted_stdin: stage_key
+    timeout_sec: 1800
+  verify:
+  - command: python3 cases/tests/cockroachdb/zone-config/scripts/prepare.py environment verify
+    trusted_stdin: stage_key
+    timeout_sec: 300
+- name: crdb_zone_fixture_ready
+  on_probe_fail: skip
+  probe:
+  - command: python3 cases/tests/cockroachdb/zone-config/scripts/prepare.py fixture probe
+    trusted_stdin: stage_key
+    timeout_sec: 300
+  apply:
+  - command: python3 cases/tests/cockroachdb/zone-config/scripts/prepare.py fixture apply
+    trusted_stdin: stage_key
+    timeout_sec: 300
+  verify:
+  - command: python3 cases/tests/cockroachdb/zone-config/scripts/prepare.py fixture verify
+    trusted_stdin: stage_key
+    timeout_sec: 300
+- name: crdb_zone_change_ready
+  on_probe_fail: skip
+  probe:
+  - command: python3 cases/tests/cockroachdb/zone-config/scripts/prepare.py change probe
+    trusted_stdin: stage_key
+    timeout_sec: 300
+  apply:
+  - command: python3 cases/tests/cockroachdb/zone-config/scripts/prepare.py change apply
+    trusted_stdin: stage_key
+    timeout_sec: 300
+  verify:
+  - command: python3 cases/tests/cockroachdb/zone-config/scripts/prepare.py change verify
+    trusted_stdin: stage_key
+    timeout_sec: 300
+- name: crdb_zone_baseline_ready
+  on_probe_fail: skip
+  probe:
+  - command: python3 cases/tests/cockroachdb/zone-config/scripts/prepare.py baseline probe
+    trusted_stdin: stage_key
+    timeout_sec: 300
+  apply:
+  - command: python3 cases/tests/cockroachdb/zone-config/scripts/prepare.py baseline apply
+    trusted_stdin: stage_key
+    timeout_sec: 300
+  verify:
+  - command: python3 cases/tests/cockroachdb/zone-config/scripts/prepare.py baseline verify
+    trusted_stdin: stage_key
+    timeout_sec: 300
+oracle:
+  verify:
+    commands:
+    - command: python3 cases/tests/cockroachdb/zone-config/oracle/oracle.py
+      trusted_stdin: stage_key
+      timeout_sec: 300

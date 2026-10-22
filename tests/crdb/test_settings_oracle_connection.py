@@ -12,8 +12,8 @@ from unittest.mock import patch
 
 import pytest
 
-from karma.crdb import CrdbLibrary, KubectlAdapter, SQLConnectionObservation, TLSMode, WorkloadRef
-from karma.crdb.types import (
+from cases.common.cockroachdb import CrdbLibrary, KubectlAdapter, SQLConnectionObservation, TLSMode, WorkloadRef
+from cases.common.cockroachdb.types import (
     AuthenticationError,
     KubernetesAccessError,
     RolloutInProgressError,
@@ -22,7 +22,7 @@ from karma.crdb.types import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
-ORACLE = ROOT / "cases/cockroachdb/cluster-settings/oracle/oracle.py"
+ORACLE = ROOT / "cases/tests/cockroachdb/cluster-settings/oracle/oracle.py"
 
 
 @pytest.fixture
@@ -108,7 +108,7 @@ def _live_resources(container_name: str = "cockroach"):
 def test_kubectl_get_resource_keeps_default_and_accepts_bounded_timeout(timeout, expected):
     adapter = KubectlAdapter() if timeout is None else KubectlAdapter(get_timeout=timeout)
     result = subprocess.CompletedProcess(["kubectl"], 0, '{"kind":"Pod"}', "")
-    with patch("karma.crdb.adapter.subprocess.run", return_value=result) as run:
+    with patch("cases.common.cockroachdb.adapter.subprocess.run", return_value=result) as run:
         adapter.get_resource("pod", "settings-test", "settings-db-0")
     assert run.call_args.kwargs["timeout"] == expected
 
@@ -132,7 +132,7 @@ def test_real_sql_connection_observer_honors_get_budget_and_renamed_container():
         return subprocess.CompletedProcess(command, 0, json.dumps(value), "")
 
     adapter = KubectlAdapter(get_timeout=2)
-    with patch("karma.crdb.adapter.subprocess.run", side_effect=fake_run) as run:
+    with patch("cases.common.cockroachdb.adapter.subprocess.run", side_effect=fake_run) as run:
         observed = CrdbLibrary(adapter).inspect_sql_connection(WorkloadRef(namespace, name), ordinal=0)
 
     assert observed.container_name == "cockroach"

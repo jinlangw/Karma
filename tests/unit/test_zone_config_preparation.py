@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPTS=Path(__file__).resolve().parents[2]/'cases/cockroachdb/zone-config/scripts'
+SCRIPTS=Path(__file__).resolve().parents[2]/'cases/tests/cockroachdb/zone-config/scripts'
 
 # Cases intentionally use local module names. Isolate this case from other case
 # helpers loaded by the unit suite.

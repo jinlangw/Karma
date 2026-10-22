@@ -7,7 +7,7 @@ from types import ModuleType
 
 import pytest
 
-path = Path(__file__).resolve().parents[2] / 'cases/cockroachdb/version-check/scripts/versions.py'
+path = Path(__file__).resolve().parents[2] / 'cases/tests/cockroachdb/version-check/scripts/versions.py'
 # Load the policy with its own exception type; do not pollute other cases' modules.
 stub = ModuleType('cluster')
 stub.UnsafeState = type('UnsafeState',(RuntimeError,),{})
