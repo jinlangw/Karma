@@ -250,6 +250,14 @@ def run_oracle(
 
     env = {**os.environ, **role_bindings, **stage_env(run_dir, stage_id),
            **(env_vars or {})}
+    # Stage oracles are strict task-time checks. Only the trusted final sweep
+    # caller opts into cross-stage durability checks; an inherited process
+    # variable cannot silently change the phase.
+    env["BENCH_ORACLE_PHASE"] = (
+        "final_sweep"
+        if (env_vars or {}).get("BENCH_ORACLE_PHASE") == "final_sweep"
+        else "stage"
+    )
 
     # Two reasons to re-run a FAIL before trusting it:
     #   * transient apiserver/proxy blip (connectivity signature) -- short backoff;
@@ -322,7 +330,8 @@ def run_regression_sweep(
         # The result directory has a regression suffix; the logical audit/key
         # identity must remain the original stage's identity.
         env_vars = {**((env_vars_map or {}).get(stage_id) or {}),
-                    **stage_env(run_dir, stage_id)}
+                    **stage_env(run_dir, stage_id),
+                    "BENCH_ORACLE_PHASE": "final_sweep"}
         verdict = run_oracle(
             oracle_config,
             role_bindings=role_bindings,

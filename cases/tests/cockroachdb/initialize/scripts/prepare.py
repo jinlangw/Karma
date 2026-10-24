@@ -61,6 +61,56 @@ def fault_template(template, value):
     return result
 
 
+def _manual_init_template(template, cluster_name):
+    """Remove only the observed hook that auto-initializes node zero."""
+    result = copy.deepcopy(template)
+    db = database_container(result)
+    lifecycle = db.get('lifecycle')
+    post_start = lifecycle.get('postStart') if isinstance(lifecycle, dict) else None
+    action = post_start.get('exec') if isinstance(post_start, dict) else None
+    command = action.get('command') if isinstance(action, dict) else None
+    if not isinstance(command, list) or not all(isinstance(token, str) for token in command):
+        return result
+
+    source = (
+        command[2]
+        if len(command) == 3 and command[0] in ('/bin/bash', '/bin/sh', 'bash', 'sh')
+        and command[1] in ('-c', '-ec')
+        else ' '.join(command)
+    )
+    try:
+        tokens = shlex.split(source)
+    except ValueError:
+        if 'cockroach' in source and re.search(r'\binit\b', source):
+            raise UnsafeState('unsupported Cockroach init postStart hook')
+        tokens = []
+    command_starts = {'if', 'then', 'until', 'do', 'else', 'exec', '&&', '||', ';', '!'}
+    invokes_init = any(
+        token.rsplit('/', 1)[-1] == 'cockroach'
+        and tokens[index + 1] == 'init'
+        and (index == 0 or tokens[index - 1] in command_starts)
+        for index, token in enumerate(tokens[:-1])
+    )
+    if not invokes_init:
+        return result
+
+    expected_script = (
+        f'if [ "$POD_NAME" = "{cluster_name}-0" ]; then '
+        'until /cockroach/cockroach init --insecure --host=127.0.0.1:26257 >/dev/null 2>&1; do '
+        'if /cockroach/cockroach node status --insecure --host=127.0.0.1:26257 >/dev/null 2>&1; then '
+        'break fi sleep 2 done fi'
+    )
+    if (
+        len(command) != 3
+        or command[:2] != ['/bin/sh', '-ec']
+        or re.sub(r'\s+', ' ', command[2]).strip() != expected_script
+    ):
+        raise UnsafeState('unsupported Cockroach init postStart hook')
+
+    del lifecycle['postStart']
+    return result
+
+
 class Preparation:
     def __init__(self, cluster):
         self.cluster = cluster
@@ -99,6 +149,7 @@ class Preparation:
 
     def preflight(self, sts):
         cluster = self.cluster
+        _manual_init_template(sts['spec']['template'], cluster.name)
         stores = cluster.stores(sts)
         db = database_container(sts['spec']['template'])
         fault_template(sts['spec']['template'], self.fault_value)
@@ -246,7 +297,9 @@ class Preparation:
         cluster = self.cluster
         sts = cluster.statefulset()
         self.preserved(baseline, sts, paused=True)
-        if sts['spec']['template'] != json.loads(baseline['data']['original_template']):
+        original_template = json.loads(baseline['data']['original_template'])
+        manual_template = _manual_init_template(original_template, cluster.name)
+        if sts['spec']['template'] not in (original_template, manual_template):
             raise UnsafeState('selected template changed during store reset')
         self.exclusive(sts, json.loads(baseline['data']['stores']), baseline)
         cluster.patch_spec(sts, {'replicas': 0, 'updateStrategy': {'type': 'OnDelete'}})
@@ -255,7 +308,14 @@ class Preparation:
         cluster.wait(stopped, 180)
         for index, store in enumerate(json.loads(baseline['data']['stores'])):
             self.reset_store(baseline, store, index)
-        cluster.patch_spec(cluster.statefulset(), {'replicas': int(baseline['data']['replicas'])})
+        sts = cluster.statefulset()
+        self.preserved(baseline, sts, paused=True)
+        if sts['spec']['template'] == original_template and manual_template != original_template:
+            cluster.patch_spec(sts, {'template': manual_template})
+            sts = cluster.statefulset()
+        if sts['spec']['template'] != manual_template:
+            raise UnsafeState('selected template changed during store reset')
+        cluster.patch_spec(sts, {'replicas': int(baseline['data']['replicas'])})
         cluster.wait(lambda: cluster.deployment_ready() == 'uninitialized', 240)
         self.update(self.load(), {'phase': 'uninitialized'})
 
@@ -319,7 +379,37 @@ class Preparation:
             if actual.get('command') != desired.get('command') or actual.get('args', []) != desired.get('args', []):
                 raise RuntimeError('join fault has not reached every selected pod')
             logs = self.cluster.require(self.cluster.kubectl('logs', pod['metadata']['name'], '-c', actual['name'], '--tail=80'))
-            if self.fault_value not in logs or 'outgoing join rpc' not in logs or 'no such host' not in logs:
+            signature = (self.fault_value, 'outgoing join rpc', 'no such host')
+            if not all(token in logs for token in signature):
+                # CockroachDB v24.1 defaults to file logging under the store
+                # directory and does not send INFO logs to stderr. Only use
+                # that known layout for the literal store path or CockroachDB's
+                # default store path; do not guess when logging is customized.
+                try:
+                    store = flag_value(actual, '--store', '/cockroach/cockroach-data')
+                    startup = arguments(actual)
+                except UnsafeState:
+                    store, startup = None, []
+                custom_log = any(
+                    token in ('--log', '--log-dir')
+                    or token.startswith('--log=')
+                    or token.startswith('--log-dir=')
+                    for token in startup
+                )
+                if (
+                    store
+                    and store.startswith('/')
+                    and not any(character in store for character in (',', '$', '\n', '\r'))
+                    and not custom_log
+                ):
+                    log_path = store.rstrip('/') + '/logs/cockroach.log'
+                    result = self.cluster.kubectl(
+                        'exec', pod['metadata']['name'], '-c', actual['name'], '--',
+                        'tail', '-n', '80', '--', log_path, timeout=10,
+                    )
+                    if result.returncode == 0:
+                        logs = result.stdout
+            if not all(token in logs for token in signature):
                 raise RuntimeError('expected join DNS error is not visible in selected pod logs')
         return True
 
@@ -340,12 +430,14 @@ class Preparation:
         self.preserved(baseline, sts)
         if baseline['data']['phase'] in ('uninitialized', 'faulted'):
             self.uninitialized()
+        original_template = json.loads(baseline['data']['original_template'])
+        manual_template = _manual_init_template(original_template, cluster.name)
         if baseline['data']['phase'] == 'uninitialized':
-            expected = fault_template(sts['spec']['template'], self.fault_value)
+            expected = fault_template(manual_template, self.fault_value)
             baseline = self.update(baseline, {'fault_template': json.dumps(expected, sort_keys=True), 'phase': 'injecting'})
         else:
             expected = json.loads(baseline['data']['fault_template'])
-        if sts['spec']['template'] not in (json.loads(baseline['data']['original_template']), expected):
+        if sts['spec']['template'] not in (original_template, manual_template, expected):
             raise UnsafeState('selected startup changed during join injection')
         cluster.patch_spec(sts, {'template': expected, 'updateStrategy': {'type': 'OnDelete'}})
         cluster.wait(lambda: bool(cluster.pods(cluster.statefulset())), 120)

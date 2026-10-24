@@ -290,7 +290,8 @@ def test_shared_connection_flags_wrapper_preserves_case_binding(relative_path, m
     cluster.certificate_directory = lambda selected: certificate_reads.append(selected) or "/observed/certs"
 
     calls = []
-    actual_helper = case._startup_client_connection_flags
+    method_globals = case.Cluster.connection_flags.__globals__
+    actual_helper = method_globals["_startup_client_connection_flags"]
 
     def observed_helper(selected, *, certificate_directory, error_type):
         calls.append((selected, error_type))
@@ -300,7 +301,7 @@ def test_shared_connection_flags_wrapper_preserves_case_binding(relative_path, m
             error_type=error_type,
         )
 
-    monkeypatch.setattr(case, "_startup_client_connection_flags", observed_helper)
+    monkeypatch.setitem(method_globals, "_startup_client_connection_flags", observed_helper)
 
     assert cluster.connection_flags() == ["--certs-dir=/observed/certs", "--cluster-name=dev"]
     assert statefulset_reads == ["read"]

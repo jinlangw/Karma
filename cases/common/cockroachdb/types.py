@@ -332,8 +332,8 @@ class NodeStatusObservation:
     membership: str | None
     is_draining: bool | None
     is_available: bool
-    ranges_unavailable: int
-    ranges_underreplicated: int
+    ranges_unavailable: int | None
+    ranges_underreplicated: int | None
     is_live: bool | None = None
 
 

@@ -8,10 +8,19 @@ them or require a case directory.
 
 Requires Python 3.11 or later. The focused suite was run on Python 3.12.
 
+`cases.common.cockroachdb.cluster_backend.ClusterBackend` shares imperative
+Kubernetes access, SQL/HTTP connection handling, identity observations, store
+lookup, and initialization-state checks. It takes the namespace, cluster name,
+the case's error type, and an optional `CrdbLibrary`. Case subclasses supply
+their SQL behavior and retain case-specific identity checks, health requirements, bootstrap,
+recovery, and task policy. It preserves the existing native case command and
+timeout behavior rather than selecting a recovery action.
+
 `cases.common.cockroachdb.storage.pvc_store_mappings()` shares the legacy CockroachDB store
 flag and claim-template mount-path parsing used by case preparation. It only
-returns volume-name/relative-path mappings; each case still owns PVC lookup,
-identity checks, reset policy, cleanup, and recovery.
+returns volume-name/relative-path mappings; callers or `ClusterBackend` perform
+PVC lookup and identity checks. Reset policy, cleanup, and recovery remain
+case-owned.
 
 `cases.common.cockroachdb.connections.select_sql_readiness_flag()` shares the fixed
 `SELECT 1;` candidate loop used by case readiness checks. The case owns its
@@ -19,8 +28,11 @@ ordered connection flags, caching, callback timeout, and unavailable message;
 the helper returns the first successful flag and leaves other readiness,
 Service, task, and recovery checks with the case.
 
-`cases.common.cockroachdb.health.observe_initialization_state()` measures the configured
-HTTP readiness endpoint on one already-observed Pod. It preserves the
+`cases.common.cockroachdb.health.observe_initialization_state()` measures the fixed
+`/health?ready=1` endpoint on one already-observed Pod, independently of the
+Kubernetes readiness handler. It uses the HTTP probe's port and scheme when
+present, otherwise the supported startup flags, without changing the Pod's probe.
+It preserves the
 caller-supplied error type for unsupported probe layouts and delegates the
 bounded curl execution to the caller. Its result distinguishes the exact
 CockroachDB deployed-but-uninitialized response from HTTP-ready state; it does

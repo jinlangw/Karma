@@ -1338,7 +1338,7 @@ class LibraryTests(unittest.TestCase):
             "id,membership,is_draining,is_available,ranges_unavailable,ranges_underreplicated\n"
             "1,active,false,true,0,0\n"
             "2,active,false,true,0,0\n"
-            "3,decommissioned,false,true,0,0\n"
+            "3,decommissioned,false,true,NULL,NULL\n"
         )
         adapter.node_liveness_output += "3,decommissioned,false,false\n"
         result = CrdbLibrary(adapter).probe_full_health(WorkloadRef(adapter.namespace, adapter.name))

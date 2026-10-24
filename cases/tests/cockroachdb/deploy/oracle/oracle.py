@@ -10,6 +10,8 @@ import os
 import subprocess
 import sys
 
+from cases.common.cockroachdb.startup import official_image_version
+
 
 NAMESPACE = os.environ["BENCH_NAMESPACE"]
 CLUSTER_NAME = os.environ.get("BENCH_PARAM_CLUSTER_NAME", "crdb-cluster")
@@ -297,10 +299,18 @@ def evaluate():
             errors.append("StatefulSet has no containers")
         else:
             image = container.get("image")
-            if image != EXPECTED_IMAGE:
+            final_version_progression = False
+            if image != EXPECTED_IMAGE and os.environ.get("BENCH_ORACLE_PHASE") == "final_sweep":
+                actual_version = official_image_version(image) if isinstance(image, str) else None
+                expected_version = official_image_version(EXPECTED_IMAGE)
+                if actual_version is not None and expected_version is not None:
+                    final_version_progression = tuple(map(int, actual_version.split("."))) >= tuple(
+                        map(int, expected_version.split("."))
+                    )
+            if image != EXPECTED_IMAGE and not final_version_progression:
                 errors.append(f"StatefulSet image should be {EXPECTED_IMAGE}, got {image}")
             cmd_str = _container_command(container)
-            if "--insecure" not in cmd_str:
+            if "--insecure" not in cmd_str and os.environ.get("BENCH_ORACLE_PHASE") != "final_sweep":
                 errors.append("CockroachDB must run in insecure mode for this case")
             # Accept either advertise flag: --advertise-host is the legacy spelling,
             # --advertise-addr the current one.
