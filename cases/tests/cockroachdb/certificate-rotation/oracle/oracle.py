@@ -163,7 +163,7 @@ def target_pod_names():
     """Return names of pods belonging to the selected cluster."""
     result = run([
         "kubectl", "-n", NAMESPACE, "get", "pods",
-        "-l", f"app.kubernetes.io/instance={CLUSTER_NAME}",
+        "-l", f"app.kubernetes.io/instance={CLUSTER_NAME},app.kubernetes.io/name=cockroachdb",
         "-o", "name",
     ])
     if result.returncode != 0:

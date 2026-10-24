@@ -8,6 +8,11 @@ import shlex
 from typing import Callable, Type
 
 
+def official_image_version(value: str) -> str | None:
+    match = re.fullmatch(r'(?:docker\.io/)?cockroachdb/cockroach:v(\d+\.\d+\.\d+)', value)
+    return match.group(1) if match else None
+
+
 def database_container(template, *, error_type: Type[Exception]) -> dict:
     candidates = [c for c in template['spec']['containers']
                   if 'cockroach' in (c.get('image', '') + ' '.join(c.get('command', []) + c.get('args', [])))

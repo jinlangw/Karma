@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Every selected node must run the target release with finalization complete."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -27,7 +28,10 @@ def evaluate():
         return version == p.target if p.patch else series(version) == series(p.target)
 
     desired = database_container(sts['spec']['template'])
-    if not matches_target(image_version(desired['image'])):
+    desired_version = image_version(desired['image'])
+    final_version_progression = (os.environ.get('BENCH_ORACLE_PHASE') == 'final_sweep'
+                                 and series(desired_version) > series(p.target))
+    if not final_version_progression and not matches_target(desired_version):
         raise RuntimeError('StatefulSet desired image is not on the target release')
     for pod in c.pods(sts):
         actual = database_container({'spec': pod['spec']})
@@ -38,21 +42,34 @@ def evaluate():
         if any(volumes.get(v['metadata']['name']) != f'{v["metadata"]["name"]}-{c.name}-{ordinal}' for v in sts['spec'].get('volumeClaimTemplates', [])):
             raise UnsafeState('an actual selected node changed its selected claim mounts')
     current = state(c)
-    if any(not matches_target(version) for version in current['binaries']):
-        raise RuntimeError('not every actual selected node runs the target release')
     target_series = '.'.join(map(str, series(p.target)))
-    if current['logical'] != target_series:
-        raise RuntimeError('major version upgrade has not finalized to ' + target_series)
+    if final_version_progression:
+        logical_series = series(current['logical'])
+        if not series(p.target) <= logical_series <= series(desired_version):
+            raise RuntimeError('finalized logical version is outside the target-to-binary release range')
+        if any(version != desired_version for version in current['binaries']):
+            raise RuntimeError('actual selected nodes have not converged to the desired binary')
+    else:
+        if any(not matches_target(version) for version in current['binaries']):
+            raise RuntimeError('not every actual selected node runs the target release')
+        if current['logical'] != target_series:
+            raise RuntimeError('major version upgrade has not finalized to ' + target_series)
     if current['cluster_id'] != baseline['data']['normalized_uuid']:
         raise UnsafeState('prepared database identity changed during the solver task')
     if p.patch:
-        if c.setting('cluster.preserve_downgrade_option') != baseline['data']['source_preserve']:
+        hold = c.setting('cluster.preserve_downgrade_option')
+        if final_version_progression:
+            if hold and hold != current['logical']:
+                raise RuntimeError('preserve_downgrade_option does not match the logical version')
+        elif hold != baseline['data']['source_preserve']:
             raise RuntimeError('patch rollout changed the inherited upgrade hold')
         policy = baseline['data']['source_auto_upgrade']
         if policy != '(unavailable)' and c.setting('cluster.auto_upgrade.enabled') != policy:
             raise RuntimeError('patch rollout changed the inherited automatic-upgrade policy')
-    elif c.setting('cluster.preserve_downgrade_option'):
-        raise RuntimeError('preserve_downgrade_option has not been cleared')
+    else:
+        hold = c.setting('cluster.preserve_downgrade_option')
+        if hold and (not final_version_progression or hold != current['logical']):
+            raise RuntimeError('preserve_downgrade_option has not been cleared')
     return True
 
 

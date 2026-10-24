@@ -116,10 +116,10 @@ def test_environment_propagates_unsafe_diagnostic_without_recovery():
 @pytest.mark.parametrize('count,expected',[(1,'num_replicas=1'),(2,'num_replicas=2, num_voters=1'),(3,None),(5,None)])
 def test_only_fresh_small_topologies_receive_valid_replication(count,expected):
     from types import SimpleNamespace
+    from cases.common.cockroachdb.cluster_backend import ClusterBackend
     statements=[]
     database=SimpleNamespace(statefulset=lambda:{'spec':{'replicas':count}},sql=lambda q:statements.append(q),require=lambda r:r)
-    configure=load_method('cluster.py','Cluster','configure_fresh_replication',{})
-    configure(database)
+    ClusterBackend.configure_fresh_replication(database)
     if expected is None:assert statements==[]
     else:
         assert len(statements)==5 and all(expected in q for q in statements)

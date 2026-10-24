@@ -7,6 +7,7 @@ Only a single documented binary edge is used; this task never finalizes an upgra
 import os
 import re
 
+from cases.common.cockroachdb.startup import official_image_version
 from cluster import UnsafeState, database_container
 
 PINNED = dict(zip(
@@ -42,10 +43,10 @@ def image(version):
 
 
 def image_version(value):
-    match = re.fullmatch(r'(?:docker.io/)?cockroachdb/cockroach:v(\d+\.\d+\.\d+)', value)
-    if not match:
+    version = official_image_version(value)
+    if version is None:
         raise UnsafeState('version preparation requires a tagged official production image')
-    return match.group(1)
+    return version
 
 
 def next_binary(logical):

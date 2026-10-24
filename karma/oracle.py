@@ -255,6 +255,12 @@ def run_oracle(
 
     stage = (run_dir, logical_stage_id if logical_stage_id is not None else stage_id)
     env = {**os.environ, **role_bindings, **(env_vars or {}), **stage_env(*stage)}
+    # Only the final sweep opts into cross-stage durability checks.
+    env["BENCH_ORACLE_PHASE"] = (
+        "final_sweep"
+        if (env_vars or {}).get("BENCH_ORACLE_PHASE") == "final_sweep"
+        else "stage"
+    )
 
     # Two reasons to re-run a FAIL before trusting it:
     #   * transient apiserver/proxy blip (connectivity signature) -- short backoff;
@@ -330,7 +336,10 @@ def run_regression_sweep(
             run_dir=run_dir,
             stage_id=f"{stage_id}__regression",
             logical_stage_id=stage_id,
-            env_vars=(env_vars_map or {}).get(stage_id),
+            env_vars={
+                **((env_vars_map or {}).get(stage_id) or {}),
+                "BENCH_ORACLE_PHASE": "final_sweep",
+            },
             timeout_sec=timeout_sec,
         )
         results[stage_id] = verdict

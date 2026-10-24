@@ -194,6 +194,16 @@ def _parse_node_status(output: str) -> tuple[NodeStatusObservation, ...]:
         draining = row.get("is_draining")
         if draining == "":
             raise UnsupportedLayoutError("CockroachDB node status response has an empty draining field")
+        ranges_unavailable = row["ranges_unavailable"]
+        ranges_underreplicated = row["ranges_underreplicated"]
+        if membership != "decommissioned" or ranges_unavailable != "NULL":
+            ranges_unavailable = _parse_nonnegative_int(ranges_unavailable, "node status")
+        else:
+            ranges_unavailable = None
+        if membership != "decommissioned" or ranges_underreplicated != "NULL":
+            ranges_underreplicated = _parse_nonnegative_int(ranges_underreplicated, "node status")
+        else:
+            ranges_underreplicated = None
         seen.add(node_id)
         observed.append(
             NodeStatusObservation(
@@ -201,8 +211,8 @@ def _parse_node_status(output: str) -> tuple[NodeStatusObservation, ...]:
                 membership=membership,
                 is_draining=_parse_bool(draining, "node status") if draining is not None else None,
                 is_available=_parse_bool(row["is_available"], "node status"),
-                ranges_unavailable=_parse_nonnegative_int(row["ranges_unavailable"], "node status"),
-                ranges_underreplicated=_parse_nonnegative_int(row["ranges_underreplicated"], "node status"),
+                ranges_unavailable=ranges_unavailable,
+                ranges_underreplicated=ranges_underreplicated,
                 is_live=_parse_bool(row["is_live"], "node status") if row.get("is_live") not in (None, "") else None,
             )
         )

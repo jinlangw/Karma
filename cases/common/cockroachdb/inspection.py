@@ -65,7 +65,29 @@ def _shell_start_tokens(container: Mapping[str, Any]) -> list[str]:
     command = [str(item) for item in _list(container.get("command"))]
     args = [str(item) for item in _list(container.get("args"))]
     if not command:
-        raise UnsupportedLayoutError("Database container has no explicit startup command")
+        image = str(container.get("image", ""))
+        image_ref = image.split("@", 1)[0]
+        image_path = image_ref
+        last_component = image_ref.rsplit("/", 1)[-1]
+        if ":" in last_component:
+            image_path = image_ref[: -len(last_component)] + last_component.rsplit(":", 1)[0]
+        env_names = {str(_mapping(item).get("name", "")) for item in _list(container.get("env"))}
+        uses_known_entrypoint = image_path in {
+            "cockroachdb/cockroach",
+            "docker.io/cockroachdb/cockroach",
+            "index.docker.io/cockroachdb/cockroach",
+        }
+        if (
+            not uses_known_entrypoint
+            or not args
+            or args[0] != "start"
+            or container.get("envFrom")
+            or env_names.intersection({"COCKROACH", "COCKROACH_ARGS"})
+        ):
+            raise UnsupportedLayoutError("Database container has no explicit startup command")
+        # The official image entrypoint dispatches its first argument as a
+        # CockroachDB subcommand; `start` execs /cockroach/cockroach directly.
+        command = ["/cockroach/cockroach"]
     executable = command[0].rsplit("/", 1)[-1]
     if executable in {"sh", "bash", "dash", "zsh"} and (len(command) >= 2 or args):
         command_parts = command[1:] + args

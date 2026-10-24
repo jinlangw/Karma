@@ -7,10 +7,11 @@ import os
 from pathlib import Path
 import re
 import shlex
-import subprocess
 import time
 
 import yaml
+from cases.common.cockroachdb.cluster_backend import ClusterBackend
+from cases.common.cockroachdb.connections import select_sql_readiness_flag
 
 FAULT_MARKER = "# karma-health-probe-fault-v1\n"
 SERVER_MARKER = "# karma-health-probe-server\n"
@@ -83,6 +84,11 @@ def health_probes(container):
 
 
 class Cluster:
+    kubectl = ClusterBackend.kubectl
+    require = staticmethod(ClusterBackend.require)
+    get = ClusterBackend.get
+    patch_spec = ClusterBackend.patch_spec
+
     def __init__(self):
         self.namespace = os.environ["BENCH_NAMESPACE"]
         self.name = os.environ.get("BENCH_PARAM_CLUSTER_NAME", "crdb-cluster")
@@ -94,25 +100,6 @@ class Cluster:
         self.labels = {"app.kubernetes.io/name": "cockroachdb", "app.kubernetes.io/instance": self.name}
         self.resources = Path(__file__).resolve().parents[1] / "resource"
         self.flag = None
-
-    def kubectl(self, *args, namespace=None, timeout=20, input_text=None):
-        namespace = self.namespace if namespace is None else namespace
-        command = ["kubectl", f"--request-timeout={timeout}s"] + (["-n", namespace] if namespace else []) + list(args)
-        try:
-            return subprocess.run(command, input=input_text, text=True, capture_output=True, timeout=timeout + 5)
-        except subprocess.TimeoutExpired:
-            return subprocess.CompletedProcess(command, 124, "", "kubectl timed out")
-
-    @staticmethod
-    def require(result):
-        if result.returncode:
-            raise RuntimeError(result.stderr.strip() or "kubectl failed")
-        return result.stdout
-
-    def get(self, kind, name=None, namespace=None):
-        args = ["get", kind] + ([name, "--ignore-not-found=true"] if name is not None else [])
-        text = self.require(self.kubectl(*args, "-o", "json", namespace=namespace))
-        return json.loads(text) if text.strip() else None
 
     def create(self, obj):
         self.require(self.kubectl("create", "-f", "-", namespace=obj["metadata"].get("namespace", ""), input_text=json.dumps(obj)))
@@ -167,12 +154,11 @@ class Cluster:
         if self.flag is None:
             container = database_container(self.statefulset()["spec"]["template"])
             directory = flag_value(container, "--certs-dir", CERT_DIR)
-            for flag in dict.fromkeys(("--certs-dir=" + directory, "--certs-dir=" + CERT_DIR, "--insecure")):
-                if self.sql("SELECT 1;", flag=flag).returncode == 0:
-                    self.flag = flag
-                    break
-            if self.flag is None:
-                raise RuntimeError("selected database has no working TLS or insecure SQL connection")
+            self.flag = select_sql_readiness_flag(
+                dict.fromkeys(("--certs-dir=" + directory, "--certs-dir=" + CERT_DIR, "--insecure")),
+                lambda query, flag: self.sql(query, flag=flag),
+                unavailable_message="selected database has no working TLS or insecure SQL connection",
+            )
         return self.flag
 
     def cluster_id(self, ordinal=0):
@@ -250,12 +236,6 @@ class Cluster:
         self.require(self.kubectl("delete", "--raw=" + f"/api/v1/namespaces/{self.namespace}/pods/{meta['name']}", "-f", "-", input_text=json.dumps(options)))
         if wait:
             self.wait(lambda: (self.get("pod", meta["name"]) or {}).get("metadata", {}).get("uid") != meta["uid"], 120)
-
-    def patch_spec(self, sts, fields):
-        patch = [{"op": "test", "path": "/metadata/uid", "value": sts["metadata"]["uid"]},
-                 {"op": "test", "path": "/metadata/resourceVersion", "value": sts["metadata"]["resourceVersion"]}]
-        patch += [{"op": "add", "path": "/spec/" + key, "value": value} for key, value in fields.items()]
-        self.require(self.kubectl("patch", "statefulset", self.name, "--type=json", "-p", json.dumps(patch)))
 
     def durable(self, sts):
         container = database_container(sts["spec"]["template"])

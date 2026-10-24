@@ -4,6 +4,7 @@ import argparse
 import csv
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -20,7 +21,15 @@ def evaluate():
     if baseline is None or baseline['data']['phase'] != 'faulted':
         raise RuntimeError('verified initialization fixture baseline is missing')
     sts = cluster.statefulset()
-    preparation.preserved(baseline, sts)
+    final_sweep = os.environ.get('BENCH_ORACLE_PHASE') == 'final_sweep'
+    if final_sweep:
+        count = int(baseline['data']['replicas'])
+        if int(sts['spec'].get('replicas', 1)) != count:
+            raise UnsafeState('selected replica count changed during preparation')
+        if cluster.stores(sts, count) != json.loads(baseline['data']['stores']):
+            raise UnsafeState('selected store configuration or PVC identity changed')
+    else:
+        preparation.preserved(baseline, sts)
     if sts['spec'].get('updateStrategy', {'type': 'RollingUpdate'}) != json.loads(baseline['data']['original_strategy']):
         raise RuntimeError('original StatefulSet update strategy has not been restored')
     if cluster.deployment_ready() != 'initialized':
@@ -33,7 +42,7 @@ def evaluate():
     for container in containers:
         if '.invalid' in flag_value(container, '--join', ''):
             raise RuntimeError('injected join fault remains in the template or an actual node')
-        if cluster.connection_flags(container) != json.loads(baseline['data']['connection_flags']):
+        if not final_sweep and cluster.connection_flags(container) != json.loads(baseline['data']['connection_flags']):
             raise UnsafeState('a selected node changed its security mode')
     # A successful init on node 0 alone, or independent databases, must fail.
     count = int(baseline['data']['replicas'])

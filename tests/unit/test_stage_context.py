@@ -32,7 +32,7 @@ def test_distinct_stage_keys_and_freeze_survive_retries(tmp_path):
     assert json.loads(trusted_input(entry, other_stage)) == third
 
 
-def test_setup_and_final_sweep_receive_the_same_stage_key_privately(tmp_path):
+def test_setup_and_final_sweep_receive_the_same_stage_key_privately(tmp_path, monkeypatch):
     run_dir = tmp_path / 'run'
     stage_identity = (run_dir, 'audit')
     env = stage_env(*stage_identity)
@@ -41,7 +41,8 @@ def test_setup_and_final_sweep_receive_the_same_stage_key_privately(tmp_path):
         "assert payload['key'] not in os.environ.values(); "
         "assert os.environ['BENCH_RUN_ID'] == 'run'; "
         "assert os.environ['BENCH_STAGE_ID'] == 'audit'; "
-        "print(hashlib.sha256(payload['key'].encode()).hexdigest(), payload['frozen'])"
+        "print(hashlib.sha256(payload['key'].encode()).hexdigest(), "
+        "payload['frozen'], os.environ.get('BENCH_ORACLE_PHASE', 'setup'))"
     )
     command = _normalize_command_item({
         'command': shlex.join([sys.executable, '-c', code]),
@@ -65,15 +66,16 @@ def test_setup_and_final_sweep_receive_the_same_stage_key_privately(tmp_path):
     assert key not in setup_output
 
     freeze_stage(run_dir, 'audit')
+    monkeypatch.setenv('BENCH_ORACLE_PHASE', 'final_sweep')
     config = {'verify_commands': [command]}
     stage = run_oracle(
         config, role_bindings={}, run_dir=run_dir, stage_id='audit',
         env_vars={'BENCH_RUN_ID': 'other-run', 'BENCH_STAGE_ID': 'other-stage'},
     )
     sweep = run_regression_sweep([('audit', config)], role_bindings_map={}, run_dir=run_dir)
-    for verdict in (stage, sweep['audit']):
+    for verdict, phase in ((stage, 'stage'), (sweep['audit'], 'final_sweep')):
         assert verdict['verdict'] == 'pass'
-        assert verdict['output'].splitlines()[-1] == f'{digest} True'
+        assert verdict['output'].splitlines()[-1] == f'{digest} True {phase}'
         assert key not in verdict['output']
     assert (run_dir / 'stages/audit__regression/oracle.json').exists()
 

@@ -1,10 +1,10 @@
 # workflows/error-prone/cockroachdb-zone-four-settings-tls-audit
 #
-# Zone config, four rate-limit settings, TLS hardening, then compliance audit
+# Zone config, four cluster settings, TLS hardening, then compliance audit
 
 metadata:
   id: cockroachdb-zone-four-settings-tls-audit
-  label: Zone config, four rate-limit settings, TLS hardening, then compliance audit
+  label: Zone config, four cluster settings, TLS hardening, then compliance audit
 spec:
   prompt_mode: progressive
   stages:
@@ -31,8 +31,8 @@ spec:
     case: cluster-settings
     retries: 0
     param_overrides:
-      setting_name: kv.snapshot_recovery.max_rate
-      setting_value: 112MiB
+      setting_name: kv.closed_timestamp.target_duration
+      setting_value: 3s
   - id: stage_04
     service: cockroachdb
     case: cluster-settings
