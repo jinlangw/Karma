@@ -176,10 +176,12 @@ def _build_parser() -> argparse.ArgumentParser:
     wf.add_argument("--agent", default=None)
     wf.add_argument("--sandbox", default="local", choices=["local", "docker"])
     wf.add_argument("--runs-dir", default="runs")
-    wf.add_argument("--resources-dir", default="cases")
+    wf.add_argument("--resources-dir", default="cases/tests")
     wf.add_argument("--profile", default=None)
     wf.add_argument("--dry-run", action="store_true",
                     help="Resolve rows and print without running.")
+    wf.add_argument("--debug", action="store_true",
+                    help="Use spec.debug settings, including any explicit namespace overrides.")
     wf.add_argument("--judge", action="store_true",
                     help="Run the LLM judge on every stage after the run completes.")
     wf.add_argument("--max-attempts", type=int, default=None,
@@ -217,7 +219,7 @@ def _build_parser() -> argparse.ArgumentParser:
     rc.add_argument("--agent", default=None)
     rc.add_argument("--sandbox", default="local", choices=["local", "docker"])
     rc.add_argument("--runs-dir", default="runs")
-    rc.add_argument("--resources-dir", default="cases")
+    rc.add_argument("--resources-dir", default="cases/tests")
     rc.add_argument("--param", action="append", default=[], metavar="KEY=VALUE")
     rc.add_argument("--timeout", type=int, default=900)
     rc.add_argument("--max-attempts", type=int, default=None,
@@ -235,14 +237,14 @@ def _build_parser() -> argparse.ArgumentParser:
     rc.add_argument("--output", default="text", choices=["text", "json"])
 
     rb = sub.add_parser("run-batch", help="Run many cases sequentially.")
-    rb.add_argument("--all", action="store_true", help="Run every case under cases/.")
+    rb.add_argument("--all", action="store_true", help="Run every case under cases/tests/.")
     rb.add_argument("--service", default=None, help="Run all cases in this service.")
     rb.add_argument("--case", action="append", default=[], metavar="SERVICE/CASE",
                     help="Run a specific case (repeatable).")
     rb.add_argument("--agent", default=None)
     rb.add_argument("--sandbox", default="local", choices=["local", "docker"])
     rb.add_argument("--runs-dir", default="runs")
-    rb.add_argument("--resources-dir", default="cases")
+    rb.add_argument("--resources-dir", default="cases/tests")
     rb.add_argument("--param", action="append", default=[], metavar="KEY=VALUE")
     rb.add_argument("--timeout", type=int, default=900)
     rb.add_argument("--max-attempts", type=int, default=None)
@@ -266,7 +268,7 @@ def _build_parser() -> argparse.ArgumentParser:
     mn.add_argument("case")
     mn.add_argument("--param", action="append", default=[], metavar="KEY=VALUE")
     mn.add_argument("--runs-dir", default="runs")
-    mn.add_argument("--resources-dir", default="cases")
+    mn.add_argument("--resources-dir", default="cases/tests")
     mn.add_argument("--profile", default=None)
 
     jg = sub.add_parser("judge", help="Run the judge on an existing run directory.")
@@ -459,13 +461,23 @@ def _cmd_run_workflow(args: argparse.Namespace) -> None:
     """Handle the ``run-workflow`` subcommand."""
     profile = load_profile(args.profile) if args.profile else {}
     merged = merge_profile(vars(args), profile)
-    resources_dir = Path(merged.get("resources_dir", "cases"))
+    resources_dir = Path(merged.get("resources_dir", "cases/tests"))
     runs_dir = Path(merged.get("runs_dir", "runs"))
     _apply_timeout_overrides(args)
     _load_env_file(getattr(args, "llm_env_file", None))
 
     raw = load_workflow_file(Path(args.workflow))
     workflow = normalize_workflow(raw, resources_dir=resources_dir)
+    debug_namespace_overrides = None
+    if args.debug:
+        debug_namespace_overrides = (
+            workflow.get("debug", {}).get("namespace_overrides") or {}
+        )
+        if not debug_namespace_overrides:
+            raise ValueError(
+                "--debug was specified, but this workflow has no "
+                "spec.debug.namespace_overrides"
+            )
 
     if args.dry_run:
         print(json.dumps(workflow, indent=2, default=str))
@@ -490,6 +502,7 @@ def _cmd_run_workflow(args: argparse.Namespace) -> None:
         agent_session=args.agent_session,
         system_prompt=_read_system_prompt_arg(args),
         prompt_mode_prologues=getattr(args, "prompt_mode_prologues", None),
+        namespace_overrides=debug_namespace_overrides,
     )
     _print_result(result, args.output)
     if getattr(args, "judge", False):
@@ -517,7 +530,7 @@ def _cmd_run_case(args: argparse.Namespace) -> None:
     profile = load_profile(args.profile) if args.profile else {}
     merged = merge_profile(vars(args), profile)
     param_overrides = _parse_param_overrides(args.param)
-    resources_dir = Path(merged.get("resources_dir", "cases"))
+    resources_dir = Path(merged.get("resources_dir", "cases/tests"))
     runs_dir = Path(merged.get("runs_dir", "runs"))
     _apply_timeout_overrides(args)
     _load_env_file(getattr(args, "llm_env_file", None))
@@ -566,7 +579,7 @@ def _cmd_run_batch(args: argparse.Namespace) -> None:
     """
     profile = load_profile(args.profile) if args.profile else {}
     merged = merge_profile(vars(args), profile)
-    resources_dir = Path(merged.get("resources_dir", "cases"))
+    resources_dir = Path(merged.get("resources_dir", "cases/tests"))
     runs_dir = Path(merged.get("runs_dir", "runs"))
     _apply_timeout_overrides(args)
     _load_env_file(getattr(args, "llm_env_file", None))
@@ -632,7 +645,7 @@ def _cmd_manual(args: argparse.Namespace) -> None:
     profile = load_profile(args.profile) if args.profile else {}
     merged = merge_profile(vars(args), profile)
     param_overrides = _parse_param_overrides(args.param)
-    resources_dir = Path(merged.get("resources_dir", "cases"))
+    resources_dir = Path(merged.get("resources_dir", "cases/tests"))
     runs_dir = Path(merged.get("runs_dir", "runs"))
 
     run_id = manual.start_manual_run(

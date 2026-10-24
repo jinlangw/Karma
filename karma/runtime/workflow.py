@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .case import run_stage, _apply_namespace_binding
+from .case import run_stage, _apply_namespace_binding, _bind_namespace_identities
 from ..definitions.prompts import render_stage_prompt
 from ..oracle import run_regression_sweep
 from ..adversary import collect_pending_lift_units
@@ -74,6 +74,7 @@ def _run_final_regression_sweep(
     *,
     run_dir: Path,
     environment: Any,
+    namespace_overrides: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Re-run the oracle for all completed stages and return a regression summary.
 
@@ -107,9 +108,11 @@ def _run_final_regression_sweep(
         roles = row.get("namespace_roles")
         if roles is None:
             roles = ["default"]
+        _, identity_bindings = _bind_namespace_identities(
+            environment, roles, run_dir.name, namespace_overrides
+        )
         bindings = _apply_namespace_binding(
-            environment.bind_namespace_roles(roles, run_dir.name),
-            row.get("namespace_binding"),
+            identity_bindings, row.get("namespace_binding")
         )
         oracle_configs.append((stage_id, case.get("oracle") or {}))
         role_bindings_map[stage_id] = bindings
@@ -199,6 +202,7 @@ def run_workflow_loop(
     stage_failure_mode: str = "terminate",
     final_sweep_mode: str = "auto",
     sandbox_options: dict[str, Any] | None = None,
+    namespace_overrides: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Drive the workflow execution loop and return the final run result.
 
@@ -239,6 +243,9 @@ def run_workflow_loop(
         the workflow completed with more than one passed stage; ``"off"``
         never sweeps; ``"full"`` sweeps whenever at least one stage passed
         (even on a failed workflow).
+    namespace_overrides:
+        Optional debug-only mapping from workflow namespace identities to
+        borrowed physical Kubernetes namespaces.
 
     Returns
     -------
@@ -294,13 +301,16 @@ def run_workflow_loop(
         for role in (row.get("namespace_roles") if row.get("namespace_roles") is not None else ["default"])
     })
     full_bindings: dict[str, str] = {}
+    generated_bindings: dict[str, str] = {}
     full_env: dict[str, str] = {}
     if environment is not None and all_roles:
         try:
-            full_bindings = environment.bind_namespace_roles(all_roles, run_dir.name)
+            generated_bindings, full_bindings = _bind_namespace_identities(
+                environment, all_roles, run_dir.name, namespace_overrides
+            )
             full_env = environment.build_namespace_env_vars(full_bindings)
         except Exception:
-            full_bindings, full_env = {}, {}
+            full_bindings, generated_bindings, full_env = {}, {}, {}
 
     regression_sweep = None
     adversary_cleanup = None
@@ -338,6 +348,7 @@ def run_workflow_loop(
                     system_prompt=system_prompt,
                     stage_index=idx,
                     prologue=stage_prologue,
+                    namespace_overrides=namespace_overrides,
                     defer_cleanup=True,
                     created_sink=ns_created,
                     sandbox_options=sandbox_options,
@@ -389,7 +400,8 @@ def run_workflow_loop(
             # A sweep failure is diagnostic only; it must not crash the run result.
             try:
                 regression_sweep = _run_final_regression_sweep(
-                    rows, stage_results, run_dir=run_dir, environment=environment
+                    rows, stage_results, run_dir=run_dir, environment=environment,
+                    namespace_overrides=namespace_overrides,
                 )
             except Exception as exc:
                 regression_sweep = None
@@ -410,14 +422,16 @@ def run_workflow_loop(
     finally:
         # Deferred namespace teardown: runs on EVERY exit path -- normal,
         # break, or a raised exception -- so namespaces are never orphaned (SR8).
-        if full_bindings and environment is not None:
+        if generated_bindings and environment is not None:
             try:
-                environment.cleanup_namespaces(full_bindings, run_dir=run_dir)
+                environment.cleanup_namespaces(generated_bindings, run_dir=run_dir)
             except Exception as exc:
                 warn(f"failed to delete workflow namespaces: {exc}")
         if environment is not None and hasattr(environment, "cleanup_created_namespaces"):
             try:
-                environment.cleanup_created_namespaces(ns_created, run_dir=run_dir)
+                environment.cleanup_created_namespaces(
+                    ns_created, run_dir=run_dir
+                )
             except Exception:
                 pass
 

@@ -1,0 +1,37 @@
+# cockroachdb/change-plan-only
+# Produce and execute a version-pair-specific CockroachDB upgrade plan.
+
+prompt: |
+  Write an executable POSIX shell script named plan.sh for upgrading a
+  CockroachDB cluster from v{{params.from_version}} to v{{params.to_version}}.
+  The upgrade must include finalizing the cluster version after the binary
+  upgrade.
+
+  At execution time, the script must accept the target namespace and StatefulSet
+  name as arguments, so it can be used with different clusters. It must fail
+  safely on errors and wait until the upgrade is complete and the cluster is
+  healthy.
+
+  Save the script under the key plan.sh in ConfigMap change-plan in the task
+  namespace.
+
+params:
+  from_version:
+    default: "23.2"
+    description: CockroachDB source version for the tested major-version upgrade
+  to_version:
+    default: "24.1.0"
+    description: CockroachDB target version for the tested major-version upgrade
+
+namespace_contract:
+  required_roles:
+    - default
+
+metrics:
+  - time_to_first_mutation
+
+oracle:
+  verify:
+    commands:
+      - command: "python3 cases/tests/cockroachdb/change-plan-only/oracle/oracle.py"
+        timeout_sec: 2400

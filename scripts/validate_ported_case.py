@@ -23,7 +23,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from karma.definitions.cases import load_case_file, normalize_case  # noqa: E402
 
-RES = Path("cases")
+RES = Path("cases/tests")
 
 
 def main() -> int:

@@ -1,9 +1,10 @@
 """
 Case loading, schema validation, parameter resolution, and config normalization.
 
-A *case* is one benchmark task defined by a ``test.yaml`` file under
-``cases/{service}/{case_name}/``. This module loads that file from
-disk, validates its structure, resolves parameter overrides, and returns
+A *case* is one benchmark task defined by a ``test.yaml`` file under the
+configured resource root (the built-in root is ``cases/tests``), grouped as
+``{service}/{case_name}/``. This module loads that file from disk, validates
+its structure, resolves parameter overrides, and returns
 a normalized case descriptor consumed by ``runtime.case``.
 
 Only the contemporary case format is accepted. Files containing legacy
@@ -41,6 +42,7 @@ class _CommandItem(BaseModel):
     """A single command entry in a probe, apply, or verify block."""
 
     command: str
+    trusted_stdin: Literal["stage_key"] | None = None
     sleep: int = 0
     namespace_role: str | None = None
     timeout_sec: int | None = None
@@ -176,6 +178,10 @@ def _normalize_command_item(raw: Any) -> dict[str, Any] | None:
     ts = raw.get("timeout_sec") or raw.get("timeoutSec")
     if ts is not None:
         item["timeout_sec"] = _coerce_int(ts, default=60)
+    if raw.get("trusted_stdin") is not None:
+        if raw["trusted_stdin"] != "stage_key":
+            raise RuntimeError("trusted_stdin must be stage_key")
+        item["trusted_stdin"] = "stage_key"
     return item
 
 

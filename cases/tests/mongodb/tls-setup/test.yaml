@@ -1,0 +1,119 @@
+# mongodb/tls-setup
+# Enable TLS for a running MongoDB replica set
+
+params:
+  cluster_prefix:
+    default: mongo-rs
+    description: StatefulSet name of the replica set members.
+  replica_set_name:
+    default: rs0
+    description: MongoDB replica set _id used when initiating the set.
+  openssl_pod_name:
+    default: openssl-toolbox
+    description: Helper pod used to generate TLS certificates.
+  app_database:
+    default: app
+    description: Application database seeded with data.
+  app_collection:
+    default: test
+    description: Application collection seeded with data.
+
+prompt: |
+  Enable TLS for the running MongoDB replica set.
+
+  The {{params.openssl_pod_name}} pod is available in the mongodb namespace to generate
+  certificates. Mount certificates into {{params.cluster_prefix}} pods at /etc/tls with:
+
+  - /etc/tls/ca.crt
+  - /etc/tls/server.pem
+  - /etc/tls/client.pem
+
+  Plain (non-TLS) connections must fail after the change, and TLS connections
+  using the files above must succeed.
+
+namespace_contract:
+  required_roles: []
+
+metrics:
+  - time_to_first_mutation
+
+preconditionUnits:
+  - name: mongo_env_ready
+    on_probe_fail: skip
+    probe:
+      # AUTHORITATIVE skip-if-running probe (P32): succeed when the canonical
+      # StatefulSet exists OR any pod is Running, so the destructive namespace
+      # rebuild below is skipped on an inherited cluster even if its pods are
+      # momentarily not Running (mid-restart from a prior stage) -- the
+      # StatefulSet persists across that window. The bare `grep -c Running`
+      # could miss such a cluster and clobber inherited state.
+      - command: "/bin/sh -c 'kubectl -n mongodb get statefulset {{params.cluster_prefix}} >/dev/null 2>&1 || kubectl -n mongodb get pods 2>/dev/null | grep -q Running'"
+        timeout_sec: 10
+    apply:
+      - command: "/bin/sh -c 'kubectl delete namespace mongodb --ignore-not-found=true; kubectl wait --for=delete namespace/mongodb --timeout=120s || true'"
+        sleep: 2
+      - command: "kubectl create namespace mongodb"
+        sleep: 1
+      - command: "kubectl -n mongodb apply -f cases/tests/mongodb/tls-setup/resource/services.yaml"
+        sleep: 2
+      - command: "kubectl -n mongodb apply -f cases/tests/mongodb/tls-setup/resource/statefulset.yaml"
+        sleep: 5
+      - command: |
+          /bin/sh -c 'for i in $(seq 1 90); do ready=$(kubectl -n mongodb get sts {{params.cluster_prefix}} -o jsonpath='\''{.status.readyReplicas}'\'' 2>/dev/null); if [ "${ready:-0}" -ge 3 ]; then exit 0; fi; sleep 5; done; exit 1'
+        timeout_sec: 480
+        sleep: 2
+      # Pod-Ready != mongod accepting TCP (§1.10): ping-until-ok before rs.initiate.
+      - command: |
+          /bin/sh -c 'for i in $(seq 1 30); do kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet --eval '\''db.runCommand({ping:1}).ok'\'' 2>/dev/null | grep -q 1 && exit 0; sleep 3; done; exit 1'
+        sleep: 2
+      - command: |
+          /bin/sh -c 'kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet --eval '\''rs.initiate({_id:"{{params.replica_set_name}}",members:[{_id:0,host:"mongo-rs-0.mongo.mongodb.svc.cluster.local:27017"},{_id:1,host:"mongo-rs-1.mongo.mongodb.svc.cluster.local:27017"},{_id:2,host:"mongo-rs-2.mongo.mongodb.svc.cluster.local:27017"}]})'\'''
+        sleep: 5
+      - command: |
+          /bin/sh -c 'for i in $(seq 1 20); do kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet --eval '\''db.hello().isWritablePrimary'\'' | grep true && exit 0; sleep 3; done; exit 1'
+        sleep: 2
+      - command: "kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet --eval 'db.getSiblingDB(\"{{params.app_database}}\").{{params.app_collection}}.insertMany([{x:1},{x:2},{x:3}], {writeConcern:{w:1}});'"
+        sleep: 2
+      - command: "/bin/sh -c 'kubectl -n mongodb get pod openssl-toolbox >/dev/null 2>&1 || kubectl -n mongodb apply -f cases/tests/mongodb/tls-setup/resource/openssl-toolbox.yaml'"
+        sleep: 2
+      - command: "kubectl -n mongodb wait --for=condition=ready pod {{params.openssl_pod_name}} --timeout=300s"
+        sleep: 2
+    verify:
+      - command: "kubectl -n mongodb get pods 2>/dev/null | grep -c Running"
+        timeout_sec: 10
+
+  # Additive data fixture (composition safety): the oracle requires >= 3 docs in
+  # {{params.app_database}}.{{params.app_collection}}. When this case runs chained on an inherited cluster the
+  # destructive `apply` above is skipped, so a prior stage may have left the
+  # collection short. This unit tops it up ADDITIVELY to the required count WITHOUT
+  # dropping/recreating the collection or touching the namespace/cluster.
+  # The probe gates on the DATA COUNT (not "pods Running"), so it runs
+  # whenever the collection is short; standalone (where `apply` already seeded 3)
+  # it sees the required count and skips -> identical behaviour. Idempotent: inserts
+  # only the deficit (required - current).
+  - name: mongo_seed_fixture
+    on_probe_fail: skip
+    probe:
+      # Auth-adaptive: when an inherited cluster has auth enabled the admin secret
+      # exists, so authenticate; otherwise connect plain. Works both ways. The seed
+      # runs before TLS is enabled, so no TLS flags are needed here.
+      - command: |
+          /bin/sh -c 't=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongo-rs-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done; au=""; pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); [ -n "$pw" ] && au="-u admin-user -p $pw --authenticationDatabase admin"; n=$(P=""; for _pi in $(seq 1 30); do P=$(kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet $t $au --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongo-rs-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet $t $au --eval '\''db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}.countDocuments({})'\'' 2>/dev/null | tr -dc 0-9); [ "${n:-0}" -ge 3 ] && echo ok | grep -c ok'
+        timeout_sec: 30
+    apply:
+      - command: |
+          /bin/sh -c 'au=""; pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); [ -n "$pw" ] && au="-u admin-user -p $pw --authenticationDatabase admin"; P=""; for _pi in $(seq 1 30); do P=$(kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet $au --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongo-rs-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet $au --eval '\''var c=db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}; var need=3-c.countDocuments({}); var docs=[]; for(var i=0;i<need;i++){docs.push({seed:"fixture",ts:new Date()});} if(docs.length>0){c.insertMany(docs,{writeConcern:{w:1}});}'\'''
+        sleep: 2
+    verify:
+      - command: |
+          /bin/sh -c 't=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongo-rs-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done; au=""; pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); [ -n "$pw" ] && au="-u admin-user -p $pw --authenticationDatabase admin"; n=$(P=""; for _pi in $(seq 1 30); do P=$(kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet $t $au --eval '\''rs.hello().primary'\'' 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongo-rs-0}; kubectl -n mongodb exec "$P" -- mongosh --quiet $t $au --eval '\''db.getSiblingDB("{{params.app_database}}").{{params.app_collection}}.countDocuments({})'\'' 2>/dev/null | tr -dc 0-9); [ "${n:-0}" -ge 3 ]'
+        timeout_sec: 30
+
+oracle:
+  verify:
+    commands:
+      # O21/M5: same bump as certificate-rotation -- the bounded mongosh execs
+      # (mutual-TLS connect + negative plain probe + data read) can exceed 60s
+      # under load; size the budget for the bounded worst case.
+      - command: "python3 cases/tests/mongodb/tls-setup/oracle/oracle.py"
+        timeout_sec: 180

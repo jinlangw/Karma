@@ -348,6 +348,93 @@ def test_apply_namespace_binding_passthrough_without_binding():
     assert _apply_namespace_binding(ident, {}) == ident
 
 
+def test_debug_namespace_override_preserves_generated_cleanup_binding():
+    from karma.runtime.case import _bind_namespace_identities
+    environment = MagicMock()
+    environment.bind_namespace_roles.return_value = {
+        "default": "karma-run",
+        "worker": "karma-run-worker",
+    }
+
+    generated_bindings, effective_bindings = _bind_namespace_identities(
+        environment,
+        ["default", "worker"],
+        "run",
+        {"default": "cockroachdb"},
+    )
+
+    assert generated_bindings == {
+        "default": "karma-run",
+        "worker": "karma-run-worker",
+    }
+    assert effective_bindings == {
+        "default": "cockroachdb",
+        "worker": "karma-run-worker",
+    }
+
+
+def test_run_stage_debug_namespace_override_routes_but_cleans_generated_namespace(tmp_path):
+    from karma.runtime.case import run_stage
+
+    row = {
+        "stage_id": "stage_1",
+        "service": "demo",
+        "case_name": "configmap-update",
+        "case": {"prompt": "patch the configmap", "oracle": {}, "precondition_units": [], "decoys": []},
+        "namespace_roles": ["default"],
+        "adversary_deploy": [],
+        "adversary_lift": [],
+        "adversary_hint": None,
+        "prompt_mode": "progressive",
+        "agent_timeout_sec": 1,
+        "retries": 0,
+    }
+    no_agent_meta = {
+        "folder": None,
+        "dockerfile": None,
+        "entrypoint": None,
+        "sandbox_mode": "local",
+        "image_tag": None,
+    }
+    environment = MagicMock()
+    environment.bind_namespace_roles.return_value = {"default": "karma-ns"}
+    environment.build_namespace_env_vars.return_value = {"BENCH_NAMESPACE": "cockroachdb"}
+    environment.build_env_vars.return_value = {}
+    environment.list_namespaces.return_value = set()
+
+    proxy = MagicMock()
+    proxy.port = 0
+
+    with patch("karma.runtime.case.launch_proxy", return_value=proxy), \
+         patch("karma.runtime.case.write_agent_bundle", return_value=tmp_path / "kc"), \
+         patch("karma.runtime.case.collect_evidence", return_value={}), \
+         patch("karma.runtime.case.run_oracle", return_value={"verdict": "pass"}), \
+         patch("karma.runtime.case.launch_agent") as mock_launch:
+        result = run_stage(
+            row,
+            run_dir=tmp_path,
+            resources_dir=tmp_path,
+            agent_meta=no_agent_meta,
+            sandbox_mode="local",
+            environment=environment,
+            prior_stage_ids=[],
+            stage_prompts=["do the thing"],
+            prompt_mode="progressive",
+            namespace_overrides={"default": "cockroachdb"},
+        )
+
+    mock_launch.assert_not_called()
+    assert result["status"] == "pass"
+    stage_dir = tmp_path / "stages" / "stage_1"
+    environment.ensure_namespaces.assert_called_once_with({}, run_dir=stage_dir)
+    environment.build_namespace_env_vars.assert_called_once_with(
+        {"default": "cockroachdb"}
+    )
+    environment.cleanup_namespaces.assert_called_once_with(
+        {"default": "karma-ns"}, run_dir=stage_dir
+    )
+
+
 def test_resolve_workflow_carries_namespace_binding(tmp_path):
     """resolve_workflow_rows must carry a stage's namespace_binding onto the row."""
     from karma.definitions.workflows import normalize_workflow, resolve_workflow_rows
@@ -360,7 +447,7 @@ def test_resolve_workflow_carries_namespace_binding(tmp_path):
             "namespace_binding": {"source": "cluster_a", "target": "cluster_b"},
         }]},
     }
-    norm = normalize_workflow(raw, resources_dir=Path("cases"))
+    norm = normalize_workflow(raw, resources_dir=Path("cases/tests"))
     assert norm["stages"][0]["namespace_binding"] == {"source": "cluster_a", "target": "cluster_b"}
-    rows = resolve_workflow_rows(norm, resources_dir=Path("cases"))
+    rows = resolve_workflow_rows(norm, resources_dir=Path("cases/tests"))
     assert rows[0]["namespace_binding"] == {"source": "cluster_a", "target": "cluster_b"}

@@ -1,0 +1,435 @@
+"""Shared imperative Kubernetes and SQL operations for CRDB case clusters.
+
+Case Cluster classes keep their recovery and task policy local while inheriting
+the common resource, identity, connection, and state-observation operations.
+"""
+
+from __future__ import annotations
+
+import csv
+import io
+import json
+import re
+import subprocess
+import time
+from urllib.parse import urlencode
+
+import yaml
+
+from .adapter import KubectlAdapter
+from .health import observe_initialization_state
+from .library import CrdbLibrary
+from .startup import (
+    arguments as _startup_arguments,
+    certificate_directory as _startup_certificate_directory,
+    client_connection_flags as _startup_client_connection_flags,
+    database_container as _startup_database_container,
+    flag_value as _startup_flag_value,
+)
+from .storage import pvc_store_mappings
+from .types import WorkloadRef
+
+
+class ClusterBackend:
+    """Shared CRDB operations; subclasses keep SQL, health, and recovery policy local."""
+
+    def __init__(self, namespace, name, *, error_type, library=None):
+        self.namespace = namespace
+        self.name = name
+        self.error_type = error_type
+        self.labels = {
+            "app.kubernetes.io/name": "cockroachdb",
+            "app.kubernetes.io/instance": name,
+        }
+        self.library = library or CrdbLibrary(KubectlAdapter())
+        self.workload_ref = WorkloadRef(namespace, name)
+
+    def kubectl(self, *args, timeout=20, input_text=None, namespace=None):
+        ns = self.namespace if namespace is None else namespace
+        command = ["kubectl", f"--request-timeout={timeout}s"] + (["-n", ns] if ns else []) + list(args)
+        try:
+            return subprocess.run(command, input=input_text, text=True, capture_output=True, timeout=timeout + 5)
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(command, 124, "", "kubectl timed out")
+
+    @staticmethod
+    def require(result):
+        if result.returncode:
+            raise RuntimeError(result.stderr.strip() or "kubectl failed")
+        return result.stdout
+
+    def get(self, kind, name=None, namespace=None):
+        args = ["get", kind] + ([name, "--ignore-not-found=true"] if name is not None else [])
+        output = self.require(self.kubectl(*args, "-o", "json", namespace=namespace))
+        return json.loads(output) if output.strip() else None
+
+    def create(self, obj):
+        self.require(self.kubectl("create", "-f", "-", input_text=json.dumps(obj)))
+        print("Created " + obj["kind"] + "/" + obj["metadata"]["name"], flush=True)
+
+    def template(self, file):
+        text = (self.resources / file).read_text()
+        for key, value in (("BENCH_NAMESPACE", self.namespace), ("BENCH_PARAM_CLUSTER_NAME", self.name)):
+            text = text.replace("${" + key + "}", value)
+        return list(yaml.safe_load_all(text))
+
+    def identity(self, obj):
+        labels = obj["metadata"].get("labels", {})
+        if any(k in labels and labels[k] != v for k, v in self.labels.items()):
+            raise self.error_type("selected resource has conflicting cluster labels")
+        if any(ref.get("controller") for ref in obj["metadata"].get("ownerReferences", [])):
+            raise self.error_type("selected resource is managed by another controller")
+
+    def statefulset(self):
+        sts = self.get("statefulset", self.name)
+        if sts is None:
+            raise RuntimeError("selected StatefulSet is absent")
+        self.identity(sts)
+        if sts["metadata"].get("deletionTimestamp") or int(sts["spec"].get("ordinals", {}).get("start", 0)) != 0:
+            raise self.error_type("terminating or non-zero-ordinal StatefulSet is unsupported")
+        return sts
+
+    def pods(self, sts):
+        items = {p["metadata"]["name"]: p for p in self.get("pods")["items"]}
+        result = []
+        for i in range(int(sts["spec"].get("replicas", 1))):
+            pod = items.get(f"{self.name}-{i}")
+            if not pod or pod["metadata"].get("deletionTimestamp"):
+                raise RuntimeError("selected database pod is missing or terminating")
+            if not any(ref.get("controller") and ref.get("uid") == sts["metadata"]["uid"] for ref in pod["metadata"].get("ownerReferences", [])):
+                raise self.error_type("selected pod belongs to another workload")
+            result.append(pod)
+        return result
+
+    def connection_flags(self, container=None):
+        container = container or _startup_database_container(self.statefulset()["spec"]["template"], error_type=self.error_type)
+        return _startup_client_connection_flags(
+            container,
+            certificate_directory=lambda: self.certificate_directory(container),
+            error_type=self.error_type,
+        )
+
+    def certificate_directory(self, container):
+        directory = _startup_flag_value(container, "--certs-dir", error_type=self.error_type)
+        return _startup_certificate_directory(
+            container,
+            directory,
+            pod_security_context=lambda: self.statefulset()["spec"]["template"]["spec"].get("securityContext", {}),
+            error_type=self.error_type,
+        )
+
+    def host(self, ordinal, sts=None):
+        sts = sts or self.statefulset()
+        return f'{self.name}-{ordinal}.{sts["spec"]["serviceName"]}.{self.namespace}.svc.cluster.local'
+
+    def executable(self, container):
+        tokens = _startup_arguments(container, error_type=self.error_type)
+        if tokens and tokens[0] == "exec":
+            tokens = tokens[1:]
+        first = tokens[0] if tokens else "start"
+        if first == "start":
+            return "/cockroach/cockroach"
+        if first == "cockroach" or first.endswith("/cockroach"):
+            return first
+        raise self.error_type("selected server executable is unsupported")
+
+    def client(self, *command, ordinal=0, timeout=10):
+        sts = self.statefulset()
+        db = _startup_database_container(sts["spec"]["template"], error_type=self.error_type)
+        port = _startup_flag_value(
+            db,
+            "--sql-addr",
+            _startup_flag_value(
+                db,
+                "--listen-addr",
+                _startup_flag_value(db, "--port", "26257", error_type=self.error_type),
+                error_type=self.error_type,
+            ),
+            error_type=self.error_type,
+        ).rsplit(":", 1)[-1]
+        if command == ("init",):
+            port = _startup_flag_value(
+                db,
+                "--listen-addr",
+                _startup_flag_value(db, "--port", "26257", error_type=self.error_type),
+                error_type=self.error_type,
+            ).rsplit(":", 1)[-1]
+            return self.kubectl(
+                "exec",
+                f"{self.name}-{ordinal}",
+                "-c",
+                db["name"],
+                "--",
+                self.executable(db),
+                "init",
+                *self.connection_flags(db),
+                "--host=" + self.host(ordinal, sts) + ":" + port,
+                timeout=15,
+            )
+        return self.kubectl(
+            "exec",
+            f"{self.name}-{ordinal}",
+            "-c",
+            db["name"],
+            "--",
+            self.executable(db),
+            *command,
+            *self.connection_flags(db),
+            "--host=" + self.host(ordinal, sts),
+            "--port=" + port,
+            "--format=csv",
+            timeout=timeout,
+        )
+
+    def restricted_internals(self, ordinal=0):
+        pod = self.get("pod", f"{self.name}-{ordinal}")
+        if not pod:
+            raise RuntimeError("selected pod is absent")
+        match = re.search(r":v(\d+)\.(\d+)\.", _startup_database_container({"spec": pod["spec"]}, error_type=self.error_type)["image"])
+        return bool(match and tuple(map(int, match.group(1, 2))) >= (26, 1))
+
+    def api_cookie(self, ordinal, db, sts):
+        pod = self.get("pod", f"{self.name}-{ordinal}")
+        cache = getattr(self, "_api_sessions", {})
+        saved = cache.get(ordinal)
+        if saved and saved["pod_uid"] == pod["metadata"]["uid"] and saved["expires"] > time.monotonic():
+            return saved["cookie"]
+        directory = self.certificate_directory(db)
+        port = _startup_flag_value(
+            db,
+            "--sql-addr",
+            _startup_flag_value(
+                db,
+                "--listen-addr",
+                _startup_flag_value(db, "--port", "26257", error_type=self.error_type),
+                error_type=self.error_type,
+            ),
+            error_type=self.error_type,
+        ).rsplit(":", 1)[-1]
+        query = urlencode(
+            {
+                "sslmode": "verify-full",
+                "sslrootcert": directory + "/ca.crt",
+                "sslcert": directory + "/client.root.crt",
+                "sslkey": directory + "/client.root.key",
+            }
+        )
+        url = f"postgresql://root@{self.host(ordinal, sts)}:{port}/?" + query
+        result = self.kubectl(
+            "exec",
+            f"{self.name}-{ordinal}",
+            "-c",
+            db["name"],
+            "--",
+            self.executable(db),
+            "auth-session",
+            "login",
+            "root",
+            "--only-cookie",
+            "--expire-after=2m",
+            "--url=" + url,
+            timeout=15,
+        )
+        cookie = self.require(result).strip()
+        if not cookie.startswith("session=") or "\n" in cookie or "\r" in cookie or len(cookie) > 8192:
+            raise self.error_type("native HTTP authentication returned an unsupported cookie")
+        # Session cookies stay in process memory and expire naturally. Never log
+        # them, write them to artifacts, or revoke other users' sessions.
+        cache[ordinal] = {"pod_uid": pod["metadata"]["uid"], "expires": time.monotonic() + 90, "cookie": cookie}
+        self._api_sessions = cache
+        return cookie
+
+    def admin_api(self, path, ordinal=0):
+        """Pinned-version status identity API; no unsafe SQL session override."""
+        sts = self.statefulset()
+        db = _startup_database_container(sts["spec"]["template"], error_type=self.error_type)
+        probe = db["readinessProbe"]["httpGet"]
+        port = {p["name"]: p["containerPort"] for p in db.get("ports", [])}.get(probe["port"], probe["port"])
+        scheme = probe.get("scheme", "HTTP").lower()
+        flags = []
+        if scheme == "https":
+            directory = self.certificate_directory(db)
+            flags = [
+                "--cacert",
+                directory + "/ca.crt",
+                "--cert",
+                directory + "/client.root.crt",
+                "--key",
+                directory + "/client.root.key",
+                "--cookie",
+                self.api_cookie(ordinal, db, sts),
+            ]
+        result = self.kubectl(
+            "exec",
+            f"{self.name}-{ordinal}",
+            "-c",
+            db["name"],
+            "--",
+            "curl",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--connect-timeout",
+            "2",
+            "--max-time",
+            "5",
+            *flags,
+            f"{scheme}://{self.host(ordinal, sts)}:{port}{path}",
+            timeout=10,
+        )
+        if result.returncode and any(code in result.stderr for code in ("401", "403", "404")):
+            raise self.error_type("identity API permission/capability error is not proof of broken stores: " + result.stderr.strip())
+        try:
+            payload = json.loads(self.require(result))
+        except ValueError as error:
+            raise self.error_type("identity API returned an unsupported payload") from error
+        if not isinstance(payload, dict):
+            raise self.error_type("identity API returned an unsupported payload")
+        return payload
+
+    def node_id(self, ordinal=0):
+        if not self.restricted_internals(ordinal):
+            return self.value("SELECT crdb_internal.node_id();", ordinal)
+        self.require(self.sql("SHOW DATABASES;", ordinal))
+        payload = self.admin_api("/_status/details/local", ordinal)
+        identity = str(payload.get("nodeId", payload.get("node_id", "")))
+        if not identity.isdigit() or int(identity) < 1:
+            raise self.error_type("identity API omitted the selected node ID")
+        return identity
+
+    def initialize(self):
+        """Initialize only confirmed fresh stores, including small test topologies."""
+        self.require(self.client("init"))
+        self.configure_fresh_replication()
+
+    def configure_fresh_replication(self):
+        count = int(self.statefulset()["spec"]["replicas"])
+        if count < 3:
+            # Fresh built-in zones otherwise retain 3/5 replicas and never pass
+            # real range health on an inherited one/two-node topology. Never
+            # normalize these settings on an already initialized healthy store.
+            for target in ("RANGE default", "DATABASE system", "RANGE meta", "RANGE system", "RANGE liveness"):
+                self.require(
+                    self.sql(
+                        "ALTER "
+                        + target
+                        + " CONFIGURE ZONE USING num_replicas="
+                        + str(count)
+                        + (", num_voters=1" if count == 2 else "")
+                        + ";"
+                    )
+                )
+
+    def cluster_id(self, ordinal=0):
+        if self.restricted_internals(ordinal):
+            payload = self.admin_api("/_admin/v1/cluster", ordinal)
+            identity = payload.get("clusterId", payload.get("cluster_id", ""))
+            if not isinstance(identity, str) or not re.fullmatch(r"[0-9a-fA-F-]{36}", identity):
+                raise self.error_type("identity API omitted the selected cluster UUID")
+            return identity
+        rows = list(csv.reader(io.StringIO(self.require(self.sql("SELECT crdb_internal.cluster_id();", ordinal)))))
+        if len(rows) != 2 or len(rows[1]) != 1 or not re.fullmatch(r"[0-9a-fA-F-]{36}", rows[1][0]):
+            raise RuntimeError("invalid database cluster identity")
+        return rows[1][0]
+
+    def value(self, query, ordinal=0):
+        rows = list(csv.reader(io.StringIO(self.require(self.sql(query, ordinal)))))
+        if not rows or len(rows) > 2 or len(rows[0]) != 1:
+            raise RuntimeError("expected a single SQL value")
+        return rows[1][0] if len(rows) == 2 and rows[1] else ""
+
+    def setting(self, name, ordinal=0):
+        if not re.fullmatch(r"[a-z_][a-z0-9_.]*", name):
+            raise ValueError("invalid cluster setting name")
+        return self.value("SHOW CLUSTER SETTING " + name + ";", ordinal)
+
+    def node_rows(self, ordinal=0):
+        result = self.client("node", "status", "--all", ordinal=ordinal)
+        return list(csv.DictReader(io.StringIO(self.require(result))))
+
+    def node_state(self, pod):
+        def execute_curl(pod_name, container_name, argv, timeout):
+            return self.require(self.kubectl("exec", pod_name, "-c", container_name, "--", *argv, timeout=timeout))
+
+        return observe_initialization_state(pod, execute_curl=execute_curl, error_type=self.error_type)
+
+    def deployment_ready(self):
+        sts = self.statefulset()
+        if int(sts["spec"].get("replicas", 1)) < 1:
+            raise RuntimeError("selected workload has no configured nodes")
+        _startup_database_container(sts["spec"]["template"], error_type=self.error_type)
+        self.services_ready(sts)
+        states = [self.node_state(pod) for pod in self.pods(sts)]
+        if len(set(states)) != 1:
+            # A restarting node can expose its waiting endpoint before reading
+            # its existing stores. Wait for convergence; persistent mixed state
+            # still blocks setup and is never permission to reset data.
+            raise RuntimeError("selected nodes mix initialized and uninitialized stores")
+        if states[0] == "initialized":
+            identities = [self.cluster_id(i) for i in range(len(states))]
+            if len(set(identities)) != 1:
+                raise RuntimeError("selected nodes belong to different databases")
+        return states[0]
+
+    def services_ready(self, sts):
+        service = self.get("service", sts["spec"]["serviceName"])
+        labels = sts["spec"]["template"]["metadata"].get("labels", {})
+        if service is None or service["spec"].get("clusterIP") != "None" or not service["spec"].get("publishNotReadyAddresses"):
+            raise self.error_type("headless Service must publish unready node addresses")
+        selector = service["spec"].get("selector", {})
+        if not selector or any(labels.get(k) != v for k, v in selector.items()):
+            raise self.error_type("headless Service does not select the selected workload")
+        for pod in self.get("pods")["items"]:
+            if all(pod["metadata"].get("labels", {}).get(k) == v for k, v in selector.items()) and not any(
+                ref.get("uid") == sts["metadata"]["uid"] for ref in pod["metadata"].get("ownerReferences", [])
+            ):
+                raise self.error_type("headless Service also selects another workload")
+
+    def wait(self, check, seconds):
+        deadline = time.monotonic() + seconds
+        last = "not ready"
+        while time.monotonic() < deadline:
+            try:
+                if check():
+                    return
+            except (RuntimeError, ValueError) as error:
+                if isinstance(error, self.error_type):
+                    raise
+                last = str(error)
+            time.sleep(3)
+        raise RuntimeError(last)
+
+    def patch_spec(self, sts, fields):
+        patch = [
+            {"op": "test", "path": "/metadata/uid", "value": sts["metadata"]["uid"]},
+            {"op": "test", "path": "/metadata/resourceVersion", "value": sts["metadata"]["resourceVersion"]},
+        ]
+        patch += [{"op": "add", "path": "/spec/" + key, "value": value} for key, value in fields.items()]
+        self.require(self.kubectl("patch", "statefulset", self.name, "--type=json", "-p", json.dumps(patch)))
+
+    def delete_pod(self, pod):
+        meta = pod["metadata"]
+        options = {"apiVersion": "v1", "kind": "DeleteOptions", "preconditions": {"uid": meta["uid"]}}
+        self.require(
+            self.kubectl(
+                "delete",
+                "--raw=" + f'/api/v1/namespaces/{self.namespace}/pods/{meta["name"]}',
+                "-f",
+                "-",
+                input_text=json.dumps(options),
+            )
+        )
+        self.wait(lambda: (self.get("pod", meta["name"]) or {}).get("metadata", {}).get("uid") != meta["uid"], 120)
+
+    def stores(self, sts, count=None):
+        mappings = pvc_store_mappings(sts, error_type=self.error_type)
+        result = []
+        for i in range(count if count is not None else int(sts["spec"].get("replicas", 1))):
+            for mapping in mappings:
+                name = f'{mapping["volume"]}-{self.name}-{i}'
+                pvc = self.get("pvc", name)
+                if not pvc or pvc["metadata"].get("deletionTimestamp") or pvc.get("status", {}).get("phase") != "Bound":
+                    raise self.error_type("database store PVC is missing or not Bound")
+                self.identity(pvc)
+                result.append({**mapping, "claim": name, "uid": pvc["metadata"]["uid"]})
+        return result

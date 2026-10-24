@@ -13,7 +13,7 @@
 #         patch the ConfigMap to remove the mongod.conf key.
 # Lift:   if the agent has not already restored it, restore the EXACT deploy-time
 #         snapshot; only when the snapshot is missing, fall back to the documented
-#         case baseline (cases/mongodb/mongod-config-update/resource/configmap.yaml).
+#         case baseline (cases/tests/mongodb/mongod-config-update/resource/configmap.yaml).
 #         Never a hand-rolled minimal template (ADV10): the case's real mongod.conf
 #         carries replSetName/security.keyFile/authorization/bindIpAll and the zlib
 #         journalCompressor, all of which a minimal rewrite would silently drop.
@@ -84,7 +84,7 @@ lift:
             --dry-run=client -o yaml | kubectl -n {{params.namespace}} apply -f -
           rm -f "$f"
         else
-          kubectl -n {{params.namespace}} apply -f cases/mongodb/mongod-config-update/resource/configmap.yaml
+          kubectl -n {{params.namespace}} apply -f cases/tests/mongodb/mongod-config-update/resource/configmap.yaml
         fi
         '
       timeout_sec: 30
