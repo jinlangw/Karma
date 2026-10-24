@@ -6,10 +6,8 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
-import time
 
-import yaml
-
+from cases.common.cockroachdb.cluster_backend import ClusterBackend
 from cases.common.cockroachdb.connections import select_sql_readiness_flag
 
 
@@ -17,7 +15,9 @@ class UnsafeState(RuntimeError):
     """An ownership/configuration conflict that waiting cannot safely repair."""
 
 
-class Cluster:
+class Cluster(ClusterBackend):
+    error_type = UnsafeState
+
     def __init__(self):
         self.namespace = os.environ["BENCH_NAMESPACE"]
         self.name = os.environ.get("BENCH_PARAM_CLUSTER_NAME", "crdb-cluster")
@@ -37,29 +37,7 @@ class Cluster:
         self.flag = None
 
     def kubectl(self, *args, namespace=None, timeout=25, input_text=None):
-        namespace = self.namespace if namespace is None else namespace
-        command = ["kubectl", f"--request-timeout={timeout}s"]
-        if namespace:
-            command += ["-n", namespace]
-        try:
-            return subprocess.run(command + list(args), input=input_text, text=True,
-                                  capture_output=True, timeout=timeout + 5)
-        except subprocess.TimeoutExpired:
-            return subprocess.CompletedProcess(command, 124, "", "kubectl timed out")
-
-    @staticmethod
-    def require(result):
-        if result.returncode:
-            # Never include submitted Secret payloads in errors or logs.
-            raise RuntimeError(result.stderr.strip() or "kubectl failed")
-        return result.stdout
-
-    def get(self, kind, name=None, namespace=None):
-        args = ["get", kind]
-        if name is not None:
-            args += [name, "--ignore-not-found=true"]
-        raw = self.require(self.kubectl(*args, "-o", "json", namespace=namespace))
-        return json.loads(raw) if raw.strip() else None
+        return super().kubectl(*args, timeout=timeout, namespace=namespace, input_text=input_text)
 
     def create(self, obj):
         self.require(self.kubectl("create", "-f", "-", namespace=obj["metadata"].get("namespace", ""),
@@ -79,12 +57,6 @@ class Cluster:
             "uid": metadata["uid"], "resourceVersion": metadata["resourceVersion"]}}
         self.require(self.kubectl("delete", "--raw=" + path, "-f", "-", input_text=json.dumps(options)))
         self.wait(lambda: self.get(obj["kind"], metadata["name"], namespace=metadata["namespace"]) is None, 120)
-
-    def template(self, file):
-        text = (self.resources / file).read_text()
-        for key, value in (("BENCH_NAMESPACE", self.namespace), ("BENCH_PARAM_CLUSTER_NAME", self.name)):
-            text = text.replace("${" + key + "}", value)
-        return list(yaml.safe_load_all(text))
 
     def identity(self, obj):
         labels = obj["metadata"].get("labels", {})
@@ -153,20 +125,6 @@ class Cluster:
             self.require(self.sql("SELECT 1;", ordinal=ordinal))
         self.service_ready(sts)
         return True
-
-    def wait(self, check, seconds):
-        deadline = time.monotonic() + seconds
-        last = "not ready"
-        while time.monotonic() < deadline:
-            try:
-                if check():
-                    return
-            except (RuntimeError, ValueError) as error:
-                if isinstance(error, UnsafeState):
-                    raise
-                last = str(error)
-            time.sleep(3)
-        raise RuntimeError(last)
 
     def certificates(self):
         """Generate only a missing target's material; never rotate inherited keys."""

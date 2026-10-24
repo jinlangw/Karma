@@ -68,7 +68,9 @@ def test_regression_result_suffix_preserves_original_private_stage_identity(tmp_
     freeze_stage(tmp_path / 'sweep-run', 'audit')
     code = ("import sys,json,os; p=json.load(sys.stdin); "
             "assert p['frozen']; assert os.environ['BENCH_STAGE_ID']=='audit'; "
-            "assert os.environ['BENCH_RUN_ID']=='sweep-run'; print('original identity retained')")
+            "assert os.environ['BENCH_RUN_ID']=='sweep-run'; "
+            "assert os.environ['BENCH_ORACLE_PHASE']=='final_sweep'; "
+            "print('original identity retained')")
     config = {'verify_commands': [{'command': shlex.join([sys.executable, '-c', code]),
                                    'trusted_stdin': 'stage_key'}]}
     result = run_regression_sweep([('audit', config)], role_bindings_map={'audit': {}},

@@ -143,7 +143,7 @@ def test_case_node_state_preserves_running_and_probe_guards_without_exec(case_pa
         cluster.node_state(ready_pod(running=False))
 
     invalid = ready_pod()
-    invalid["spec"]["containers"][0]["readinessProbe"]["httpGet"]["path"] = "/health"
+    invalid["spec"]["containers"][0]["readinessProbe"]["httpGet"]["host"] = "db.internal"
     with pytest.raises(
         case.UnsafeState,
         match=r"^case requires an HTTP /health\?ready=1 readiness probe on the database listener$",

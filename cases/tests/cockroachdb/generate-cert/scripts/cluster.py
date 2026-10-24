@@ -5,11 +5,8 @@ import json
 import os
 from pathlib import Path
 import re
-import subprocess
-import time
 
-import yaml
-
+from cases.common.cockroachdb.cluster_backend import ClusterBackend
 from cases.common.cockroachdb.connections import select_sql_readiness_flag
 from cases.common.cockroachdb.security import (
     _generate_cert_certificate_directory,
@@ -43,7 +40,9 @@ def insecure_template(template, secret_names):
     return _insecure_template(template, secret_names, error_type=UnsafeState)
 
 
-class Cluster:
+class Cluster(ClusterBackend):
+    error_type = UnsafeState
+
     def __init__(self):
         self.namespace = os.environ["BENCH_NAMESPACE"]
         self.name = os.environ.get("BENCH_PARAM_CLUSTER_NAME", "crdb-cluster")
@@ -59,33 +58,16 @@ class Cluster:
         self.sql_container = None
 
     def kubectl(self, *args, timeout=25, namespace=None, input_text=None):
-        namespace = self.namespace if namespace is None else namespace
-        command = ["kubectl", f"--request-timeout={timeout}s"] + (["-n", namespace] if namespace else []) + list(args)
-        try:
-            return subprocess.run(command, input=input_text, text=True, capture_output=True, timeout=timeout + 5)
-        except subprocess.TimeoutExpired:
-            return subprocess.CompletedProcess(command, 124, "", "kubectl timed out")
+        return super().kubectl(*args, timeout=timeout, namespace=namespace, input_text=input_text)
 
-    @staticmethod
-    def require(result):
-        if result.returncode:
-            raise RuntimeError(result.stderr.strip() or "kubectl failed")
-        return result.stdout
+    def patch_spec(self, obj, fields):
+        return super().patch_spec(obj, fields)
 
-    def get(self, kind, name=None, namespace=None):
-        args = ["get", kind] + ([name, "--ignore-not-found=true"] if name is not None else [])
-        raw = self.require(self.kubectl(*args, "-o", "json", namespace=namespace))
-        return json.loads(raw) if raw.strip() else None
+    require = staticmethod(ClusterBackend.require)
 
     def create(self, obj):
         self.require(self.kubectl("create", "-f", "-", input_text=json.dumps(obj), namespace=obj["metadata"].get("namespace", "")))
         print(f"Created {obj['kind']}/{obj['metadata']['name']}", flush=True)
-
-    def template(self, file):
-        text = (self.resources / file).read_text()
-        for key, value in (("BENCH_NAMESPACE", self.namespace), ("BENCH_PARAM_CLUSTER_NAME", self.name)):
-            text = text.replace("${" + key + "}", value)
-        return list(yaml.safe_load_all(text))
 
     def identity(self, obj):
         labels = obj["metadata"].get("labels", {})
@@ -164,20 +146,6 @@ class Cluster:
                 raise UnsafeState("database Services must expose SQL 26257 and console 8080")
         return True
 
-    def wait(self, check, seconds):
-        deadline = time.monotonic() + seconds
-        last = "not ready"
-        while time.monotonic() < deadline:
-            try:
-                if check():
-                    return
-            except (RuntimeError, ValueError) as error:
-                if isinstance(error, UnsafeState):
-                    raise
-                last = str(error)
-            time.sleep(3)
-        raise RuntimeError(last)
-
     def delete(self, obj, wait=True):
         plural = {"Pod": "pods", "Secret": "secrets"}[obj["kind"]]
         meta = obj["metadata"]
@@ -188,13 +156,6 @@ class Cluster:
         self.require(self.kubectl("delete", "--raw=" + path, "-f", "-", input_text=json.dumps(options)))
         if wait:
             self.wait(lambda: (self.get(obj["kind"], meta["name"]) or {}).get("metadata", {}).get("uid") != meta["uid"], 120)
-
-    def patch_spec(self, obj, fields):
-        patch = [{"op": "test", "path": "/metadata/uid", "value": obj["metadata"]["uid"]},
-                 {"op": "test", "path": "/metadata/resourceVersion", "value": obj["metadata"]["resourceVersion"]}]
-        for key, value in fields.items():
-            patch.append({"op": "add", "path": "/spec/" + key, "value": value})
-        self.require(self.kubectl("patch", "statefulset", self.name, "--type=json", "-p", json.dumps(patch)))
 
     def durable(self, sts):
         container = database_container(sts["spec"]["template"])

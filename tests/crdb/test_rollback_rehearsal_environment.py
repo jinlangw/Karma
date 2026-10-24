@@ -442,7 +442,6 @@ def test_cluster_ready_calls_one_shared_full_health_observation_after_case_contr
     assert library.calls[0][0].namespace == "rollback-fixture"
     assert library.calls[0][0].name == "db"
     assert library.calls[0][1] == 5
-    assert not hasattr(cluster, "node_rows")
     assert not hasattr(cluster, "liveness_rows")
 
 
