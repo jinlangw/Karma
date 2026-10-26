@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: etl-job
-  namespace: spark-etl
+  namespace: ${BENCH_NS_SPARK_ETL}
 spec:
   backoffLimit: 0
   template:

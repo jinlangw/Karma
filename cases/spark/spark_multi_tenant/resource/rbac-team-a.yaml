@@ -2,25 +2,25 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: spark
-  namespace: spark-team-a
+  namespace: ${BENCH_NS_SPARK_TEAM_A}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: spark-role
-  namespace: spark-team-a
+  namespace: ${BENCH_NS_SPARK_TEAM_A}
 rules:
 - apiGroups: [""]
   resources: ["pods", "pods/log", "services", "configmaps", "persistentvolumeclaims", "secrets"]
   verbs: ["create", "get", "list", "watch", "delete", "update", "patch"]
 ---
-# BUG: subjects[0].namespace is "default" but the ServiceAccount lives in
-# "spark-team-a". The binding does not grant the Team A SA any permissions.
+# BUG: subjects[0].namespace is ${BENCH_NS_SPARK_WRONG} but the ServiceAccount lives in
+# ${BENCH_NS_SPARK_TEAM_A}. The binding does not grant the Team A SA any permissions.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: spark-role-binding
-  namespace: spark-team-a
+  namespace: ${BENCH_NS_SPARK_TEAM_A}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -28,4 +28,4 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: spark
-  namespace: default
+  namespace: ${BENCH_NS_SPARK_WRONG}

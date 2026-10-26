@@ -12,7 +12,7 @@
 
 params:
   namespace:
-    default: ray
+    default: ${BENCH_NS_RAY}
     description: Namespace the Ray cluster runs in.
   policy_name:
     default: block-ray-gcs
@@ -24,8 +24,8 @@ deploy:
     - command: "kubectl -n {{params.namespace}} get deployment ray-head"
       timeout_sec: 10
   apply:
-    - command: >-
-        kubectl -n {{params.namespace}} apply -f - <<'EOF'
+    - command: |
+        kubectl -n {{params.namespace}} apply -f - <<EOF
         apiVersion: networking.k8s.io/v1
         kind: NetworkPolicy
         metadata:

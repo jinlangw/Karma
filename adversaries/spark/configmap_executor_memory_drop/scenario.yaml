@@ -7,14 +7,14 @@
 # executor OOMs on any non-trivial stage; the agent must detect the incorrect
 # value in the ConfigMap and raise it to at least "512m".
 #
-# Targets the literal `spark-runtime` namespace used by spark_runtime_ops.
+# Targets the namespace bound to the spark_runtime role used by spark_runtime_ops.
 #
 # Deploy: patch spark-config so spark.executor.memory = "128m".
 # Lift:   if the agent has not already corrected it, restore to "512m".
 
 params:
   namespace:
-    default: spark-runtime
+    default: ${BENCH_NS_SPARK_RUNTIME}
     description: Namespace where the spark-config ConfigMap lives.
   configmap_name:
     default: spark-config

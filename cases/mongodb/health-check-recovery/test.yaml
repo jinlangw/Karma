@@ -13,7 +13,7 @@ params:
     description: Username of the health-check monitoring user.
 
 prompt: |
-  A 3-member MongoDB replica set is running in the mongodb namespace with auth enabled.
+  A 3-member MongoDB replica set is running in the ${BENCH_NS_MONGODB} namespace with auth enabled.
   One member is failing health checks and the replica set is degraded.
 
   Task:
@@ -25,7 +25,8 @@ prompt: |
   - No operators or CRDs.
 
 namespace_contract:
-  required_roles: []
+  required_roles:
+    - mongodb
 
 metrics:
   - time_to_first_mutation
@@ -40,27 +41,27 @@ preconditionUnits:
       # momentarily not Running (mid-restart from a prior stage) -- the
       # StatefulSet persists across that window. The bare `grep -c Running`
       # could miss such a cluster and clobber inherited state.
-      - command: "/bin/sh -c 'kubectl -n mongodb get statefulset mongodb-replica >/dev/null 2>&1 || kubectl -n mongodb get pods 2>/dev/null | grep -q Running'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_MONGODB} get statefulset mongodb-replica >/dev/null 2>&1 || kubectl -n ${BENCH_NS_MONGODB} get pods 2>/dev/null | grep -q Running'"
         timeout_sec: 10
     apply:
       - command: |
           /bin/sh -c '
-          kubectl delete namespace mongodb --ignore-not-found=true; kubectl wait --for=delete namespace/mongodb --timeout=120s || true
+          kubectl delete namespace ${BENCH_NS_MONGODB} --ignore-not-found=true; kubectl wait --for=delete namespace/${BENCH_NS_MONGODB} --timeout=120s || true
           '
         sleep: 2
-      - command: "kubectl create namespace mongodb"
+      - command: "kubectl create namespace ${BENCH_NS_MONGODB}"
         sleep: 1
-      - command: "kubectl -n mongodb apply -f cases/mongodb/health-check-recovery/resource/secrets.yaml"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} apply -f cases/mongodb/health-check-recovery/resource/secrets.yaml"
         sleep: 1
-      - command: "kubectl -n mongodb apply -f cases/mongodb/health-check-recovery/resource/health-check.yaml"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} apply -f cases/mongodb/health-check-recovery/resource/health-check.yaml"
         sleep: 1
-      - command: "kubectl -n mongodb apply -f cases/mongodb/health-check-recovery/resource/services.yaml"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} apply -f cases/mongodb/health-check-recovery/resource/services.yaml"
         sleep: 1
-      - command: "kubectl -n mongodb apply -f cases/mongodb/health-check-recovery/resource/statefulset.yaml"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} apply -f cases/mongodb/health-check-recovery/resource/statefulset.yaml"
         sleep: 5
       - command: |
           for i in $(seq 1 110); do
-            phase=$(kubectl -n mongodb get pod mongodb-replica-0 -o jsonpath='{.status.phase}' 2>/dev/null)
+            phase=$(kubectl -n ${BENCH_NS_MONGODB} get pod mongodb-replica-0 -o jsonpath='{.status.phase}' 2>/dev/null)
             if [ "${phase}" = "Running" ]; then
               exit 0
             fi
@@ -71,7 +72,7 @@ preconditionUnits:
         sleep: 2
       - command: |
           for i in $(seq 1 110); do
-            phase=$(kubectl -n mongodb get pod mongodb-replica-2 -o jsonpath='{.status.phase}' 2>/dev/null)
+            phase=$(kubectl -n ${BENCH_NS_MONGODB} get pod mongodb-replica-2 -o jsonpath='{.status.phase}' 2>/dev/null)
             if [ "${phase}" = "Running" ]; then
               exit 0
             fi
@@ -83,7 +84,7 @@ preconditionUnits:
       - command: |
           for i in 0 1 2; do
             for t in $(seq 1 60); do
-              if kubectl -n mongodb exec mongodb-replica-$i -- \
+              if kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-$i -- \
                    mongosh --quiet --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | grep -q 1; then
                 break
               fi
@@ -93,22 +94,22 @@ preconditionUnits:
         timeout_sec: 400
         sleep: 2
       - command: |
-          kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '
+          kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- mongosh --quiet --eval '
           rs.initiate({_id:"{{params.replica_set_name}}",members:[
-            {_id:0,host:"mongodb-replica-0.mongodb-replica-svc.mongodb.svc.cluster.local:27017"},
-            {_id:1,host:"mongodb-replica-1.mongodb-replica-svc.mongodb.svc.cluster.local:27017"},
-            {_id:2,host:"mongodb-replica-2.mongodb-replica-svc.mongodb.svc.cluster.local:27017"}
+            {_id:0,host:"mongodb-replica-0.mongodb-replica-svc.'${BENCH_NS_MONGODB}'.svc.cluster.local:27017"},
+            {_id:1,host:"mongodb-replica-1.mongodb-replica-svc.'${BENCH_NS_MONGODB}'.svc.cluster.local:27017"},
+            {_id:2,host:"mongodb-replica-2.mongodb-replica-svc.'${BENCH_NS_MONGODB}'.svc.cluster.local:27017"}
           ]})'
         sleep: 5
       - command: |
           for i in $(seq 1 20); do
-            kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep true && exit 0
+            kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep true && exit 0
             sleep 3
           done
           exit 1
         sleep: 2
       - command: |
-          kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '
+          kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- mongosh --quiet --eval '
           db.getSiblingDB("admin").createUser({
             user: "{{params.admin_username}}",
             pwd: "admin123password",
@@ -120,7 +121,7 @@ preconditionUnits:
           })'
         sleep: 2
       - command: |
-          kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet \
+          kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- mongosh --quiet \
           "mongodb://{{params.admin_username}}:admin123password@localhost:27017/admin" \
           --eval 'db.getSiblingDB("admin").createUser({
             user: "{{params.health_username}}",
@@ -128,12 +129,12 @@ preconditionUnits:
             roles: [{role: "clusterMonitor", db: "admin"}]
           })'
         sleep: 2
-      - command: "kubectl -n mongodb wait --for=condition=ready pod/mongodb-replica-0 --timeout=300s"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} wait --for=condition=ready pod/mongodb-replica-0 --timeout=300s"
         sleep: 2
-      - command: "kubectl -n mongodb wait --for=condition=ready pod/mongodb-replica-2 --timeout=300s"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} wait --for=condition=ready pod/mongodb-replica-2 --timeout=300s"
         sleep: 2
     verify:
-      - command: "kubectl -n mongodb get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
   - name: admin_user_fixture
@@ -148,24 +149,24 @@ preconditionUnits:
     probe:
       - command: |
           /bin/sh -c '
-          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
-          pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+          pw=$(kubectl -n ${BENCH_NS_MONGODB} get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
           [ -n "$pw" ] || exit 1
-          kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1
+          kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1
           '
         timeout_sec: 30
     apply:
       # Ensure the admin secret (idempotent: create only if missing).
-      - command: "/bin/sh -c 'kubectl -n mongodb get secret admin-user-password >/dev/null 2>&1 || kubectl -n mongodb create secret generic admin-user-password --from-literal=password=admin123password'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_MONGODB} get secret admin-user-password >/dev/null 2>&1 || kubectl -n ${BENCH_NS_MONGODB} create secret generic admin-user-password --from-literal=password=admin123password'"
         sleep: 1
       # Ensure the admin-user MongoDB user. On a no-auth inherited cluster this
       # runs unauthenticated and succeeds; where it already exists it errors and
       # the `|| true` keeps it a no-op. Never drops or alters existing users/data.
       - command: |
           /bin/sh -c '
-          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
-          P=""; for _pi in $(seq 1 30); do P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t --eval "rs.hello().primary" 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongodb-replica-0}
-          kubectl -n mongodb exec "$P" -- mongosh --quiet $t --eval "db.getSiblingDB(\"admin\").createUser({user:\"{{params.admin_username}}\",pwd:\"admin123password\",roles:[{role:\"root\",db:\"admin\"}]})" 2>/dev/null || true
+          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+          P=""; for _pi in $(seq 1 30); do P=$(kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- mongosh --quiet $t --eval "rs.hello().primary" 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongodb-replica-0}
+          kubectl -n ${BENCH_NS_MONGODB} exec "$P" -- mongosh --quiet $t --eval "db.getSiblingDB(\"admin\").createUser({user:\"{{params.admin_username}}\",pwd:\"admin123password\",roles:[{role:\"root\",db:\"admin\"}]})" 2>/dev/null || true
           '
         sleep: 2
     verify:
@@ -174,10 +175,10 @@ preconditionUnits:
       # the companion secret exists.
       - command: |
           /bin/sh -c '
-          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
-          pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}
+          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+          pw=$(kubectl -n ${BENCH_NS_MONGODB} get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}
           for _vi in $(seq 1 20); do
-            kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1 && exit 0
+            kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1 && exit 0
             sleep 3
           done
           exit 1
@@ -199,26 +200,26 @@ preconditionUnits:
     probe:
       - command: |
           /bin/sh -c '
-          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
-          pw=$(kubectl -n mongodb get secret health-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+          pw=$(kubectl -n ${BENCH_NS_MONGODB} get secret health-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
           [ -n "$pw" ] || exit 1
-          kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://{{params.health_username}}:$pw@localhost:27017/admin" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1
+          kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://{{params.health_username}}:$pw@localhost:27017/admin" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1
           '
         timeout_sec: 30
     apply:
       # Ensure the health secret (idempotent: create only if missing).
-      - command: "/bin/sh -c 'kubectl -n mongodb get secret health-user-password >/dev/null 2>&1 || kubectl -n mongodb create secret generic health-user-password --from-literal=password=healthpass123'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_MONGODB} get secret health-user-password >/dev/null 2>&1 || kubectl -n ${BENCH_NS_MONGODB} create secret generic health-user-password --from-literal=password=healthpass123'"
         sleep: 1
       # Ensure the health-user MongoDB user, authenticated as admin. Where it
       # already exists the createUser errors and `|| true` keeps it a no-op. Never
       # drops or alters existing users/data.
       - command: |
           /bin/sh -c '
-          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
-          ap=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+          ap=$(kubectl -n ${BENCH_NS_MONGODB} get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
           au=""; [ -n "$ap" ] && au="-u {{params.admin_username}} -p $ap --authenticationDatabase admin"
-          P=""; for _pi in $(seq 1 30); do P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t --eval "rs.hello().primary" 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongodb-replica-0}
-          kubectl -n mongodb exec "$P" -- mongosh --quiet $t $au --eval "db.getSiblingDB(\"admin\").createUser({user:\"{{params.health_username}}\",pwd:\"healthpass123\",roles:[{role:\"clusterMonitor\",db:\"admin\"}]})" 2>/dev/null || true
+          P=""; for _pi in $(seq 1 30); do P=$(kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- mongosh --quiet $t --eval "rs.hello().primary" 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongodb-replica-0}
+          kubectl -n ${BENCH_NS_MONGODB} exec "$P" -- mongosh --quiet $t $au --eval "db.getSiblingDB(\"admin\").createUser({user:\"{{params.health_username}}\",pwd:\"healthpass123\",roles:[{role:\"clusterMonitor\",db:\"admin\"}]})" 2>/dev/null || true
           '
         sleep: 2
     verify:
@@ -227,9 +228,9 @@ preconditionUnits:
       # companion secret exists.
       - command: |
           /bin/sh -c '
-          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
           for _vi in $(seq 1 20); do
-            kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://{{params.health_username}}:healthpass123@localhost:27017/admin?directConnection=true" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1 && exit 0
+            kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://{{params.health_username}}:healthpass123@localhost:27017/admin?directConnection=true" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1 && exit 0
             sleep 3
           done
           exit 1
@@ -265,13 +266,13 @@ preconditionUnits:
       # carries a stale (non-empty, != real health password) override for member-1.
       - command: |
           /bin/sh -c '
-          hp=$(kubectl -n mongodb get secret health-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); hp=${hp:-healthpass123}
-          v=$(kubectl -n mongodb get configmap health-overrides -o jsonpath="{.data.mongodb-replica-1}" 2>/dev/null)
+          hp=$(kubectl -n ${BENCH_NS_MONGODB} get secret health-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); hp=${hp:-healthpass123}
+          v=$(kubectl -n ${BENCH_NS_MONGODB} get configmap health-overrides -o jsonpath="{.data.mongodb-replica-1}" 2>/dev/null)
           [ -n "$v" ] && [ "$v" != "$hp" ]
           '
         timeout_sec: 15
     apply:
-      - command: "kubectl -n mongodb apply -f cases/mongodb/health-check-recovery/resource/health-check.yaml"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} apply -f cases/mongodb/health-check-recovery/resource/health-check.yaml"
         sleep: 1
       # P16: re-applying the FULL statefulset.yaml onto an inherited STS whose
       # immutable fields a prior stage (e.g. statefulset-customization) mutated
@@ -281,17 +282,17 @@ preconditionUnits:
       # re-apply to re-establish this case's health-* volumes/mounts + probe.
       # Standalone the STS was just freshly created by mongo_env_ready and is
       # already this exact spec, so the orphan-delete + re-apply is a clean no-op.
-      - command: "kubectl -n mongodb delete statefulset mongodb-replica --cascade=orphan --ignore-not-found=true"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} delete statefulset mongodb-replica --cascade=orphan --ignore-not-found=true"
         sleep: 2
-      - command: "kubectl -n mongodb apply -f cases/mongodb/health-check-recovery/resource/statefulset.yaml"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} apply -f cases/mongodb/health-check-recovery/resource/statefulset.yaml"
         sleep: 3
-      - command: "kubectl -n mongodb delete pod mongodb-replica-1 --ignore-not-found=true"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} delete pod mongodb-replica-1 --ignore-not-found=true"
         sleep: 2
     verify:
       - command: |
           /bin/sh -c '
-          hp=$(kubectl -n mongodb get secret health-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); hp=${hp:-healthpass123}
-          v=$(kubectl -n mongodb get configmap health-overrides -o jsonpath="{.data.mongodb-replica-1}" 2>/dev/null)
+          hp=$(kubectl -n ${BENCH_NS_MONGODB} get secret health-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); hp=${hp:-healthpass123}
+          v=$(kubectl -n ${BENCH_NS_MONGODB} get configmap health-overrides -o jsonpath="{.data.mongodb-replica-1}" 2>/dev/null)
           [ -n "$v" ] && [ "$v" != "$hp" ]
           '
         timeout_sec: 15

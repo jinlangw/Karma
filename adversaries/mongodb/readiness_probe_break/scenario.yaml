@@ -7,7 +7,7 @@
 # startup time. Pods start failing readiness checks, the replica set degrades,
 # and the agent must detect the bad probe parameters and restore sensible values.
 #
-# Targets the literal `mongodb` namespace. StatefulSet name `mongodb-replica`
+# Targets the MongoDB namespace parameter, defaulting to `${BENCH_NS_MONGODB}`. StatefulSet name `mongodb-replica`
 # is used by custom-roles, health-check-recovery, initialize, mongod-config-update,
 # password-rotation, readiness-probe-tuning, replica-scaling, statefulset-customization,
 # user-management, version-upgrade, and version-upgrade-hard.
@@ -17,7 +17,7 @@
 
 params:
   namespace:
-    default: mongodb
+    default: ${BENCH_NS_MONGODB}
     description: Namespace where the mongodb-replica StatefulSet runs.
   statefulset_name:
     default: mongodb-replica

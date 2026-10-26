@@ -5,7 +5,7 @@ import re
 import subprocess
 import sys
 
-NAMESPACE = "elasticsearch"
+NAMESPACE = os.environ.get("BENCH_NAMESPACE", "elasticsearch")
 SERVICE = "es-http"
 # Hint for the Elasticsearch StatefulSet name. Used as an override when it names
 # a StatefulSet that actually exists; otherwise the StatefulSet (and its real

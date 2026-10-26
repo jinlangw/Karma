@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: spark-skew-broadcast
-  namespace: spark-skew
+  namespace: ${BENCH_NS_SPARK_SKEW}
 spec:
   backoffLimit: 0
   template:

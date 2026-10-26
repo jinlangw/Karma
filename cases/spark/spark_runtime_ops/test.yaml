@@ -52,7 +52,8 @@ params:
     description: Minimum executor memory required in the Spark config
 
 namespace_contract:
-  required_roles: []
+  required_roles:
+    - spark_runtime
 
 metrics:
   - time_to_first_mutation
@@ -67,33 +68,33 @@ preconditionUnits:
   - name: spark_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n spark-runtime get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_SPARK_RUNTIME} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
     apply:
-      - command: "kubectl delete namespace spark-runtime --ignore-not-found=true --wait=false"
+      - command: "kubectl delete namespace ${BENCH_NS_SPARK_RUNTIME} --ignore-not-found=true --wait=false"
         sleep: 1
-      - command: "/bin/sh -c 'kubectl wait --for=delete namespace/spark-runtime --timeout=300s 2>/dev/null || true'"
+      - command: "/bin/sh -c 'kubectl wait --for=delete namespace/${BENCH_NS_SPARK_RUNTIME} --timeout=300s 2>/dev/null || true'"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_runtime_ops/resource/namespace.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_RUNTIME' < cases/spark/spark_runtime_ops/resource/namespace.yaml | kubectl apply -f -"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_runtime_ops/resource/rbac.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_RUNTIME' < cases/spark/spark_runtime_ops/resource/rbac.yaml | kubectl apply -f -"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_runtime_ops/resource/spark-config.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_RUNTIME' < cases/spark/spark_runtime_ops/resource/spark-config.yaml | kubectl apply -f -"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_runtime_ops/resource/spark-credentials.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_RUNTIME' < cases/spark/spark_runtime_ops/resource/spark-credentials.yaml | kubectl apply -f -"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_runtime_ops/resource/spark-cluster.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_RUNTIME' < cases/spark/spark_runtime_ops/resource/spark-cluster.yaml | kubectl apply -f -"
         sleep: 10
-      - command: "kubectl apply -f cases/spark/spark_runtime_ops/resource/monitoring-deployment-v1.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_RUNTIME' < cases/spark/spark_runtime_ops/resource/monitoring-deployment-v1.yaml | kubectl apply -f -"
         sleep: 3
-      - command: "kubectl apply -f cases/spark/spark_runtime_ops/resource/monitoring-deployment.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_RUNTIME' < cases/spark/spark_runtime_ops/resource/monitoring-deployment.yaml | kubectl apply -f -"
         sleep: 2
-      - command: "kubectl apply -f cases/spark/spark_runtime_ops/resource/batch-job.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_RUNTIME' < cases/spark/spark_runtime_ops/resource/batch-job.yaml | kubectl apply -f -"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_runtime_ops/resource/spark-data-processor.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_RUNTIME' < cases/spark/spark_runtime_ops/resource/spark-data-processor.yaml | kubectl apply -f -"
         sleep: 3
     verify:
-      - command: "kubectl -n spark-runtime get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_SPARK_RUNTIME} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
 oracle:

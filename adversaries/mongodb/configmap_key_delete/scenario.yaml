@@ -6,7 +6,7 @@
 # ConfigMap mount loses its expected file. The agent must detect the missing key
 # and restore a valid mongod.conf to the ConfigMap before rolling out.
 #
-# Targets the literal `mongodb` namespace (mongod-config-update uses -n mongodb).
+# Targets the MongoDB namespace parameter, defaulting to `${BENCH_NS_MONGODB}` (mongod-config-update uses the same role).
 # The ConfigMap is named `mongod-config` as deployed by that case.
 #
 # Deploy: snapshot the live mongod.conf into a backup ConfigMap (ADV8), then
@@ -20,7 +20,7 @@
 
 params:
   namespace:
-    default: mongodb
+    default: ${BENCH_NS_MONGODB}
     description: Namespace where the mongod-config ConfigMap lives.
   configmap_name:
     default: mongod-config

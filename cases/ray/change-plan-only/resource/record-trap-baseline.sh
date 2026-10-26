@@ -8,7 +8,7 @@
 # to a skipped teeth-check, never a precondition ERROR. Always overwrites the
 # baseline ConfigMap so a stage composed mid-workflow snapshots the state
 # inherited at ITS start (O5), not a stale recording from an earlier stage.
-NS=ray
+NS="${BENCH_NS_RAY:-ray}"
 CM=change-plan-baseline
 reps=$(kubectl -n "$NS" get deploy ray-worker -o jsonpath='{.spec.replicas}' 2>/dev/null)
 head_img=$(kubectl -n "$NS" get deploy ray-head -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)

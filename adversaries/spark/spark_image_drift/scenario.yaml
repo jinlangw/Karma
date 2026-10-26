@@ -16,7 +16,7 @@
 
 params:
   namespace:
-    default: spark-streaming
+    default: ${BENCH_NS_SPARK_STREAMING}
     description: Namespace where the spark-worker Deployment lives.
   deployment_name:
     default: spark-worker

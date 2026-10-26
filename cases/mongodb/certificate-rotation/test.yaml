@@ -35,7 +35,8 @@ prompt: |
   - The {{params.openssl_pod_name}} pod is available to generate new certificates.
 
 namespace_contract:
-  required_roles: []
+  required_roles:
+    - mongodb
 
 metrics:
   - time_to_first_mutation
@@ -50,26 +51,26 @@ preconditionUnits:
       # momentarily not Running (mid-restart from a prior stage) -- the
       # StatefulSet persists across that window. The bare `grep -c Running`
       # could miss such a cluster and clobber inherited state.
-      - command: "/bin/sh -c 'kubectl -n mongodb get statefulset {{params.cluster_prefix}} >/dev/null 2>&1 || kubectl -n mongodb get pods 2>/dev/null | grep -q Running'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_MONGODB} get statefulset {{params.cluster_prefix}} >/dev/null 2>&1 || kubectl -n ${BENCH_NS_MONGODB} get pods 2>/dev/null | grep -q Running'"
         timeout_sec: 10
     apply:
       - command: |
           /bin/sh -c '
-          kubectl delete namespace mongodb --ignore-not-found=true; kubectl wait --for=delete namespace/mongodb --timeout=120s || true
+          kubectl delete namespace ${BENCH_NS_MONGODB} --ignore-not-found=true; kubectl wait --for=delete namespace/${BENCH_NS_MONGODB} --timeout=120s || true
           '
         sleep: 2
-      - command: "kubectl create namespace mongodb"
+      - command: "kubectl create namespace ${BENCH_NS_MONGODB}"
         sleep: 1
-      - command: "kubectl -n mongodb apply -f cases/mongodb/certificate-rotation/resource/services.yaml"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} apply -f cases/mongodb/certificate-rotation/resource/services.yaml"
         sleep: 2
-      - command: "/bin/sh -c 'kubectl -n mongodb get pod openssl-toolbox >/dev/null 2>&1 || kubectl -n mongodb apply -f cases/mongodb/certificate-rotation/resource/openssl-toolbox.yaml'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_MONGODB} get pod openssl-toolbox >/dev/null 2>&1 || kubectl -n ${BENCH_NS_MONGODB} apply -f cases/mongodb/certificate-rotation/resource/openssl-toolbox.yaml'"
         sleep: 2
-      - command: "kubectl -n mongodb wait --for=condition=ready pod {{params.openssl_pod_name}} --timeout=300s"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} wait --for=condition=ready pod {{params.openssl_pod_name}} --timeout=300s"
         sleep: 2
       - command: |
           set -e
           TMP_DIR=$(mktemp -d)
-          kubectl -n mongodb exec {{params.openssl_pod_name}} -- /bin/sh -c '
+          kubectl -n ${BENCH_NS_MONGODB} exec {{params.openssl_pod_name}} -- env BENCH_NS_MONGODB=${BENCH_NS_MONGODB} /bin/sh -c '
           set -e
           mkdir -p /tmp/certs
           cat > /tmp/certs/openssl.cnf <<EOF
@@ -85,12 +86,12 @@ preconditionUnits:
           [alt_names]
           DNS.1=localhost
           DNS.2=mongo
-          DNS.3=mongo.mongodb
-          DNS.4=mongo.mongodb.svc
-          DNS.5=mongo.mongodb.svc.cluster.local
-          DNS.6=mongo-rs-0.mongo.mongodb.svc.cluster.local
-          DNS.7=mongo-rs-1.mongo.mongodb.svc.cluster.local
-          DNS.8=mongo-rs-2.mongo.mongodb.svc.cluster.local
+          DNS.3=mongo.${BENCH_NS_MONGODB}
+          DNS.4=mongo.${BENCH_NS_MONGODB}.svc
+          DNS.5=mongo.${BENCH_NS_MONGODB}.svc.cluster.local
+          DNS.6=mongo-rs-0.mongo.${BENCH_NS_MONGODB}.svc.cluster.local
+          DNS.7=mongo-rs-1.mongo.${BENCH_NS_MONGODB}.svc.cluster.local
+          DNS.8=mongo-rs-2.mongo.${BENCH_NS_MONGODB}.svc.cluster.local
           EOF
           openssl genrsa -out /tmp/certs/ca.key 2048
           openssl req -x509 -new -nodes -key /tmp/certs/ca.key -sha256 -days 3650 -subj "/CN=mongo-ca" -out /tmp/certs/ca.crt
@@ -99,26 +100,26 @@ preconditionUnits:
           openssl x509 -req -in /tmp/certs/server.csr -CA /tmp/certs/ca.crt -CAkey /tmp/certs/ca.key -CAcreateserial -out /tmp/certs/server.crt -days {{params.old_cert_valid_days}} -extensions v3_req -extfile /tmp/certs/openssl.cnf
           cat /tmp/certs/server.crt /tmp/certs/server.key > /tmp/certs/server.pem
           '
-          kubectl -n mongodb cp {{params.openssl_pod_name}}:/tmp/certs "${TMP_DIR}/certs"
-          kubectl -n mongodb create secret generic {{params.tls_ca_secret_name}} \
+          kubectl -n ${BENCH_NS_MONGODB} cp {{params.openssl_pod_name}}:/tmp/certs "${TMP_DIR}/certs"
+          kubectl -n ${BENCH_NS_MONGODB} create secret generic {{params.tls_ca_secret_name}} \
             --from-file=ca.crt="${TMP_DIR}/certs/ca.crt" \
             --from-file=ca.key="${TMP_DIR}/certs/ca.key" \
             --dry-run=client -o yaml | kubectl apply -f -
-          kubectl -n mongodb create secret generic {{params.tls_cert_secret_name}} \
+          kubectl -n ${BENCH_NS_MONGODB} create secret generic {{params.tls_cert_secret_name}} \
             --from-file=server.pem="${TMP_DIR}/certs/server.pem" \
             --dry-run=client -o yaml | kubectl apply -f -
           SERVER_FP=$(openssl x509 -noout -fingerprint -sha256 -in "${TMP_DIR}/certs/server.crt" | cut -d= -f2)
           CA_FP=$(openssl x509 -noout -fingerprint -sha256 -in "${TMP_DIR}/certs/ca.crt" | cut -d= -f2)
-          kubectl -n mongodb create configmap {{params.old_tls_configmap_name}} \
+          kubectl -n ${BENCH_NS_MONGODB} create configmap {{params.old_tls_configmap_name}} \
             --from-literal=server_fingerprint_sha256="${SERVER_FP}" \
             --from-literal=ca_fingerprint_sha256="${CA_FP}" \
             --dry-run=client -o yaml | kubectl apply -f -
         sleep: 2
-      - command: "kubectl -n mongodb apply -f cases/mongodb/certificate-rotation/resource/statefulset.yaml"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} apply -f cases/mongodb/certificate-rotation/resource/statefulset.yaml"
         sleep: 5
       - command: |
           for i in $(seq 1 60); do
-            ready=$(kubectl -n mongodb get sts {{params.cluster_prefix}} -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+            ready=$(kubectl -n ${BENCH_NS_MONGODB} get sts {{params.cluster_prefix}} -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
             if [ "${ready:-0}" -ge 3 ]; then
               exit 0
             fi
@@ -129,8 +130,8 @@ preconditionUnits:
       # Pod-Ready != mongod accepting TLS connections (§1.10): ping-until-ok first.
       - command: |
           for i in $(seq 1 30); do
-            kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet \
-              "mongodb://mongo-rs-0.mongo.mongodb.svc.cluster.local:27017/?directConnection=true" \
+            kubectl -n ${BENCH_NS_MONGODB} exec mongo-rs-0 -- mongosh --quiet \
+              "mongodb://mongo-rs-0.mongo.${BENCH_NS_MONGODB}.svc.cluster.local:27017/?directConnection=true" \
               --tls --tlsCAFile /etc/mongo-ca/ca.crt \
               --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | grep -q 1 && exit 0
             sleep 3
@@ -138,20 +139,20 @@ preconditionUnits:
           exit 1
         sleep: 2
       - command: |
-          kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet \
-          "mongodb://mongo-rs-0.mongo.mongodb.svc.cluster.local:27017/?directConnection=true" \
+          kubectl -n ${BENCH_NS_MONGODB} exec mongo-rs-0 -- mongosh --quiet \
+          "mongodb://mongo-rs-0.mongo.${BENCH_NS_MONGODB}.svc.cluster.local:27017/?directConnection=true" \
           --tls --tlsCAFile /etc/mongo-ca/ca.crt \
           --eval '
           rs.initiate({_id:"{{params.replica_set_name}}",members:[
-            {_id:0,host:"mongo-rs-0.mongo.mongodb.svc.cluster.local:27017"},
-            {_id:1,host:"mongo-rs-1.mongo.mongodb.svc.cluster.local:27017"},
-            {_id:2,host:"mongo-rs-2.mongo.mongodb.svc.cluster.local:27017"}
+            {_id:0,host:"mongo-rs-0.mongo.'${BENCH_NS_MONGODB}'.svc.cluster.local:27017"},
+            {_id:1,host:"mongo-rs-1.mongo.'${BENCH_NS_MONGODB}'.svc.cluster.local:27017"},
+            {_id:2,host:"mongo-rs-2.mongo.'${BENCH_NS_MONGODB}'.svc.cluster.local:27017"}
           ]})'
         sleep: 5
       - command: |
           for i in $(seq 1 20); do
-            kubectl -n mongodb exec mongo-rs-0 -- mongosh --quiet \
-              "mongodb://mongo-rs-0.mongo.mongodb.svc.cluster.local:27017/?directConnection=true" \
+            kubectl -n ${BENCH_NS_MONGODB} exec mongo-rs-0 -- mongosh --quiet \
+              "mongodb://mongo-rs-0.mongo.${BENCH_NS_MONGODB}.svc.cluster.local:27017/?directConnection=true" \
               --tls --tlsCAFile /etc/mongo-ca/ca.crt \
               --eval 'db.hello().isWritablePrimary' | grep true && exit 0
             sleep 3
@@ -159,7 +160,7 @@ preconditionUnits:
           exit 1
         sleep: 2
     verify:
-      - command: "kubectl -n mongodb get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
   # Self-contained TLS layer (composition safety): the prompt assumes mongod is
@@ -181,19 +182,19 @@ preconditionUnits:
   - name: mongo_tls_self_contained
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n mongodb get secret {{params.tls_cert_secret_name}}"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} get secret {{params.tls_cert_secret_name}}"
         timeout_sec: 10
     apply:
-      - command: "kubectl -n mongodb apply -f cases/mongodb/certificate-rotation/resource/services.yaml"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} apply -f cases/mongodb/certificate-rotation/resource/services.yaml"
         sleep: 2
-      - command: "/bin/sh -c 'kubectl -n mongodb get pod openssl-toolbox >/dev/null 2>&1 || kubectl -n mongodb apply -f cases/mongodb/certificate-rotation/resource/openssl-toolbox.yaml'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_MONGODB} get pod openssl-toolbox >/dev/null 2>&1 || kubectl -n ${BENCH_NS_MONGODB} apply -f cases/mongodb/certificate-rotation/resource/openssl-toolbox.yaml'"
         sleep: 2
-      - command: "kubectl -n mongodb wait --for=condition=ready pod {{params.openssl_pod_name}} --timeout=300s"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} wait --for=condition=ready pod {{params.openssl_pod_name}} --timeout=300s"
         sleep: 2
       - command: |
           set -e
           TMP_DIR=$(mktemp -d)
-          kubectl -n mongodb exec {{params.openssl_pod_name}} -- /bin/sh -c '
+          kubectl -n ${BENCH_NS_MONGODB} exec {{params.openssl_pod_name}} -- env BENCH_NS_MONGODB=${BENCH_NS_MONGODB} /bin/sh -c '
           set -e
           mkdir -p /tmp/certs
           cat > /tmp/certs/openssl.cnf <<EOF
@@ -209,12 +210,12 @@ preconditionUnits:
           [alt_names]
           DNS.1=localhost
           DNS.2=mongo
-          DNS.3=mongo.mongodb
-          DNS.4=mongo.mongodb.svc
-          DNS.5=mongo.mongodb.svc.cluster.local
-          DNS.6=mongo-rs-0.mongo.mongodb.svc.cluster.local
-          DNS.7=mongo-rs-1.mongo.mongodb.svc.cluster.local
-          DNS.8=mongo-rs-2.mongo.mongodb.svc.cluster.local
+          DNS.3=mongo.${BENCH_NS_MONGODB}
+          DNS.4=mongo.${BENCH_NS_MONGODB}.svc
+          DNS.5=mongo.${BENCH_NS_MONGODB}.svc.cluster.local
+          DNS.6=mongo-rs-0.mongo.${BENCH_NS_MONGODB}.svc.cluster.local
+          DNS.7=mongo-rs-1.mongo.${BENCH_NS_MONGODB}.svc.cluster.local
+          DNS.8=mongo-rs-2.mongo.${BENCH_NS_MONGODB}.svc.cluster.local
           EOF
           openssl genrsa -out /tmp/certs/ca.key 2048
           openssl req -x509 -new -nodes -key /tmp/certs/ca.key -sha256 -days 3650 -subj "/CN=mongo-ca" -out /tmp/certs/ca.crt
@@ -223,17 +224,17 @@ preconditionUnits:
           openssl x509 -req -in /tmp/certs/server.csr -CA /tmp/certs/ca.crt -CAkey /tmp/certs/ca.key -CAcreateserial -out /tmp/certs/server.crt -days {{params.old_cert_valid_days}} -extensions v3_req -extfile /tmp/certs/openssl.cnf
           cat /tmp/certs/server.crt /tmp/certs/server.key > /tmp/certs/server.pem
           '
-          kubectl -n mongodb cp {{params.openssl_pod_name}}:/tmp/certs "${TMP_DIR}/certs"
-          kubectl -n mongodb create secret generic {{params.tls_ca_secret_name}} \
+          kubectl -n ${BENCH_NS_MONGODB} cp {{params.openssl_pod_name}}:/tmp/certs "${TMP_DIR}/certs"
+          kubectl -n ${BENCH_NS_MONGODB} create secret generic {{params.tls_ca_secret_name}} \
             --from-file=ca.crt="${TMP_DIR}/certs/ca.crt" \
             --from-file=ca.key="${TMP_DIR}/certs/ca.key" \
             --dry-run=client -o yaml | kubectl apply -f -
-          kubectl -n mongodb create secret generic {{params.tls_cert_secret_name}} \
+          kubectl -n ${BENCH_NS_MONGODB} create secret generic {{params.tls_cert_secret_name}} \
             --from-file=server.pem="${TMP_DIR}/certs/server.pem" \
             --dry-run=client -o yaml | kubectl apply -f -
           SERVER_FP=$(openssl x509 -noout -fingerprint -sha256 -in "${TMP_DIR}/certs/server.crt" | cut -d= -f2)
           CA_FP=$(openssl x509 -noout -fingerprint -sha256 -in "${TMP_DIR}/certs/ca.crt" | cut -d= -f2)
-          kubectl -n mongodb create configmap {{params.old_tls_configmap_name}} \
+          kubectl -n ${BENCH_NS_MONGODB} create configmap {{params.old_tls_configmap_name}} \
             --from-literal=server_fingerprint_sha256="${SERVER_FP}" \
             --from-literal=ca_fingerprint_sha256="${CA_FP}" \
             --dry-run=client -o yaml | kubectl apply -f -
@@ -246,14 +247,14 @@ preconditionUnits:
       # the TLS-enabled spec is established cleanly regardless of the inherited
       # shape. Standalone the STS was just built by mongo_env_ready with the same
       # base spec, so the orphan-delete + re-apply is a clean no-op rebuild.
-      - command: "kubectl -n mongodb delete statefulset {{params.cluster_prefix}} --cascade=orphan --ignore-not-found=true"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} delete statefulset {{params.cluster_prefix}} --cascade=orphan --ignore-not-found=true"
         sleep: 2
-      - command: "kubectl -n mongodb apply -f cases/mongodb/certificate-rotation/resource/statefulset.yaml"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} apply -f cases/mongodb/certificate-rotation/resource/statefulset.yaml"
         sleep: 5
       - command: |
-          kubectl -n mongodb rollout status sts {{params.cluster_prefix}} --timeout=300s || true
+          kubectl -n ${BENCH_NS_MONGODB} rollout status sts {{params.cluster_prefix}} --timeout=300s || true
           for i in $(seq 1 60); do
-            ready=$(kubectl -n mongodb get sts {{params.cluster_prefix}} -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+            ready=$(kubectl -n ${BENCH_NS_MONGODB} get sts {{params.cluster_prefix}} -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
             if [ "${ready:-0}" -ge 3 ]; then
               exit 0
             fi
@@ -263,7 +264,7 @@ preconditionUnits:
         sleep: 2
     verify:
       - command: |
-          /bin/sh -c 'kubectl -n mongodb get secret {{params.tls_cert_secret_name}} >/dev/null 2>&1; true'
+          /bin/sh -c 'kubectl -n ${BENCH_NS_MONGODB} get secret {{params.tls_cert_secret_name}} >/dev/null 2>&1; true'
         timeout_sec: 10
 
   # Additive baseline capture (composition safety): the oracle proves rotation by
@@ -283,23 +284,23 @@ preconditionUnits:
   - name: mongo_tls_baseline_capture
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n mongodb get configmap {{params.old_tls_configmap_name}}"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} get configmap {{params.old_tls_configmap_name}}"
         timeout_sec: 10
     apply:
       - command: |
           set -e
           TMP_DIR=$(mktemp -d)
-          kubectl -n mongodb get secret {{params.tls_cert_secret_name}} -o jsonpath='{.data.server\.pem}' | base64 -d > "${TMP_DIR}/server.pem"
-          kubectl -n mongodb get secret {{params.tls_ca_secret_name}} -o jsonpath='{.data.ca\.crt}' | base64 -d > "${TMP_DIR}/ca.crt"
-          SERVER_FP=$(kubectl -n mongodb exec -i {{params.openssl_pod_name}} -- openssl x509 -noout -fingerprint -sha256 < "${TMP_DIR}/server.pem" | cut -d= -f2)
-          CA_FP=$(kubectl -n mongodb exec -i {{params.openssl_pod_name}} -- openssl x509 -noout -fingerprint -sha256 < "${TMP_DIR}/ca.crt" | cut -d= -f2)
-          kubectl -n mongodb create configmap {{params.old_tls_configmap_name}} \
+          kubectl -n ${BENCH_NS_MONGODB} get secret {{params.tls_cert_secret_name}} -o jsonpath='{.data.server\.pem}' | base64 -d > "${TMP_DIR}/server.pem"
+          kubectl -n ${BENCH_NS_MONGODB} get secret {{params.tls_ca_secret_name}} -o jsonpath='{.data.ca\.crt}' | base64 -d > "${TMP_DIR}/ca.crt"
+          SERVER_FP=$(kubectl -n ${BENCH_NS_MONGODB} exec -i {{params.openssl_pod_name}} -- openssl x509 -noout -fingerprint -sha256 < "${TMP_DIR}/server.pem" | cut -d= -f2)
+          CA_FP=$(kubectl -n ${BENCH_NS_MONGODB} exec -i {{params.openssl_pod_name}} -- openssl x509 -noout -fingerprint -sha256 < "${TMP_DIR}/ca.crt" | cut -d= -f2)
+          kubectl -n ${BENCH_NS_MONGODB} create configmap {{params.old_tls_configmap_name}} \
             --from-literal=server_fingerprint_sha256="${SERVER_FP}" \
             --from-literal=ca_fingerprint_sha256="${CA_FP}" \
             --dry-run=client -o yaml | kubectl apply -f -
         sleep: 2
     verify:
-      - command: "kubectl -n mongodb get configmap {{params.old_tls_configmap_name}} -o jsonpath='{.data.server_fingerprint_sha256}'"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} get configmap {{params.old_tls_configmap_name}} -o jsonpath='{.data.server_fingerprint_sha256}'"
         timeout_sec: 10
 
 oracle:

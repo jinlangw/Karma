@@ -16,12 +16,13 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from common.oracle_lib import (  # noqa: E402
+    bench_namespace,
     deployment_ready_replicas,
     ray_worker_raylet_count,
     wait_ready_replicas,
 )
 
-NAMESPACE = "ray"
+NAMESPACE = bench_namespace()
 HEAD = "ray-head"
 WORKER = "ray-worker"
 # Param-first, never live-derived (O2 exception / O41): the worker count IS the

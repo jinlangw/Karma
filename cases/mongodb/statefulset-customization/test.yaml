@@ -25,7 +25,7 @@ params:
     description: Faulty memory limit applied to break readiness.
 
 prompt: |
-  A 3-member MongoDB replica set is running in the mongodb namespace with auth enabled.
+  A 3-member MongoDB replica set is running in the ${BENCH_NS_MONGODB} namespace with auth enabled.
   Pods never become Ready, and monitoring cannot see them.
 
   Task:
@@ -39,7 +39,8 @@ prompt: |
   - No operators or CRDs.
 
 namespace_contract:
-  required_roles: []
+  required_roles:
+    - mongodb
 
 metrics:
   - time_to_first_mutation
@@ -54,47 +55,47 @@ preconditionUnits:
       # momentarily not Running (mid-restart from a prior stage) -- the
       # StatefulSet persists across that window. The bare `grep -c Running`
       # could miss such a cluster and clobber inherited state.
-      - command: "/bin/sh -c 'kubectl -n mongodb get statefulset {{params.cluster_prefix}} >/dev/null 2>&1 || kubectl -n mongodb get pods 2>/dev/null | grep -q Running'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_MONGODB} get statefulset {{params.cluster_prefix}} >/dev/null 2>&1 || kubectl -n ${BENCH_NS_MONGODB} get pods 2>/dev/null | grep -q Running'"
         timeout_sec: 10
     apply:
-      - command: "/bin/sh -c 'kubectl delete namespace mongodb --ignore-not-found=true; kubectl wait --for=delete namespace/mongodb --timeout=120s || true'"
+      - command: "/bin/sh -c 'kubectl delete namespace ${BENCH_NS_MONGODB} --ignore-not-found=true; kubectl wait --for=delete namespace/${BENCH_NS_MONGODB} --timeout=120s || true'"
         sleep: 2
-      - command: "kubectl create namespace mongodb"
+      - command: "kubectl create namespace ${BENCH_NS_MONGODB}"
         sleep: 1
-      - command: "kubectl -n mongodb apply -f cases/mongodb/statefulset-customization/resource/secrets.yaml"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} apply -f cases/mongodb/statefulset-customization/resource/secrets.yaml"
         sleep: 1
-      - command: "kubectl -n mongodb apply -f cases/mongodb/statefulset-customization/resource/guard-script.yaml"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} apply -f cases/mongodb/statefulset-customization/resource/guard-script.yaml"
         sleep: 1
-      - command: "kubectl -n mongodb apply -f cases/mongodb/statefulset-customization/resource/services.yaml"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} apply -f cases/mongodb/statefulset-customization/resource/services.yaml"
         sleep: 1
-      - command: "kubectl -n mongodb apply -f cases/mongodb/statefulset-customization/resource/statefulset.yaml"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} apply -f cases/mongodb/statefulset-customization/resource/statefulset.yaml"
         sleep: 5
-      - command: "kubectl -n mongodb wait --for=condition=ready pod -l app={{params.cluster_prefix}} --timeout=300s"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} wait --for=condition=ready pod -l app={{params.cluster_prefix}} --timeout=300s"
         sleep: 2
       # Pod-Ready != mongod accepting TCP (§1.10). Poll ping-until-ok before the
       # first mongosh call so rs.initiate doesn't hit MongoNetworkError ECONNREFUSED.
       - command: |
-          /bin/sh -c 'for i in $(seq 1 30); do kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '\''db.runCommand({ping:1}).ok'\'' 2>/dev/null | grep -q 1 && exit 0; sleep 3; done; exit 1'
+          /bin/sh -c 'for i in $(seq 1 30); do kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- mongosh --quiet --eval '\''db.runCommand({ping:1}).ok'\'' 2>/dev/null | grep -q 1 && exit 0; sleep 3; done; exit 1'
         sleep: 2
       - command: |
-          /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '\''rs.initiate({_id:"{{params.replica_set_name}}",members:[{_id:0,host:"mongodb-replica-0.mongodb-replica-svc.mongodb.svc.cluster.local:27017"},{_id:1,host:"mongodb-replica-1.mongodb-replica-svc.mongodb.svc.cluster.local:27017"},{_id:2,host:"mongodb-replica-2.mongodb-replica-svc.mongodb.svc.cluster.local:27017"}]})'\'''
+          /bin/sh -c 'kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- mongosh --quiet --eval "rs.initiate({_id:\"{{params.replica_set_name}}\",members:[{_id:0,host:\"mongodb-replica-0.mongodb-replica-svc.${BENCH_NS_MONGODB}.svc.cluster.local:27017\"},{_id:1,host:\"mongodb-replica-1.mongodb-replica-svc.${BENCH_NS_MONGODB}.svc.cluster.local:27017\"},{_id:2,host:\"mongodb-replica-2.mongodb-replica-svc.${BENCH_NS_MONGODB}.svc.cluster.local:27017\"}]})"'
         sleep: 5
       - command: |
-          /bin/sh -c 'for i in $(seq 1 20); do kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '\''db.hello().isWritablePrimary'\'' | grep true && exit 0; sleep 3; done; exit 1'
+          /bin/sh -c 'for i in $(seq 1 20); do kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- mongosh --quiet --eval '\''db.hello().isWritablePrimary'\'' | grep true && exit 0; sleep 3; done; exit 1'
         sleep: 2
       - command: |
-          /bin/sh -c 'kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet --eval '\''db.getSiblingDB("admin").createUser({user:"{{params.admin_username}}",pwd:"admin123password",roles:[{role:"clusterAdmin",db:"admin"},{role:"userAdminAnyDatabase",db:"admin"},{role:"readWriteAnyDatabase",db:"admin"}]})'\'''
+          /bin/sh -c 'kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- mongosh --quiet --eval '\''db.getSiblingDB("admin").createUser({user:"{{params.admin_username}}",pwd:"admin123password",roles:[{role:"clusterAdmin",db:"admin"},{role:"userAdminAnyDatabase",db:"admin"},{role:"readWriteAnyDatabase",db:"admin"}]})'\'''
         sleep: 2
       - command: |
-          /bin/sh -c 'kubectl -n mongodb patch sts {{params.cluster_prefix}} --type=json -p='\''[{"op":"replace","path":"/spec/template/metadata/labels/{{params.template_label_key}}","value":"disabled"},{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"{{params.faulty_request_memory}}"},{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"{{params.faulty_limit_memory}}"}]'\'''
+          /bin/sh -c 'kubectl -n ${BENCH_NS_MONGODB} patch sts {{params.cluster_prefix}} --type=json -p='\''[{"op":"replace","path":"/spec/template/metadata/labels/{{params.template_label_key}}","value":"disabled"},{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"{{params.faulty_request_memory}}"},{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"{{params.faulty_limit_memory}}"}]'\'''
         sleep: 2
-      - command: "kubectl -n mongodb delete pod -l app={{params.cluster_prefix}}"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} delete pod -l app={{params.cluster_prefix}}"
         sleep: 2
     verify:
       # The precondition deliberately breaks the statefulset (faulty memory
       # patch + pod restart) for the agent to fix, so pods are NOT expected to
       # be Running here -- verify the broken baseline statefulset is in place.
-      - command: "kubectl -n mongodb get statefulset {{params.cluster_prefix}} -o name"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} get statefulset {{params.cluster_prefix}} -o name"
         timeout_sec: 10
 
   - name: admin_user_fixture
@@ -109,24 +110,24 @@ preconditionUnits:
     probe:
       - command: |
           /bin/sh -c '
-          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
-          pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
+          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+          pw=$(kubectl -n ${BENCH_NS_MONGODB} get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null)
           [ -n "$pw" ] || exit 1
-          kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1
+          kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1
           '
         timeout_sec: 30
     apply:
       # Ensure the admin secret (idempotent: create only if missing).
-      - command: "/bin/sh -c 'kubectl -n mongodb get secret admin-user-password >/dev/null 2>&1 || kubectl -n mongodb create secret generic admin-user-password --from-literal=password=admin123password'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_MONGODB} get secret admin-user-password >/dev/null 2>&1 || kubectl -n ${BENCH_NS_MONGODB} create secret generic admin-user-password --from-literal=password=admin123password'"
         sleep: 1
       # Ensure the admin-user MongoDB user. On a no-auth inherited cluster this
       # runs unauthenticated and succeeds; where it already exists it errors and
       # the `|| true` keeps it a no-op. Never drops or alters existing users/data.
       - command: |
           /bin/sh -c '
-          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
-          P=""; for _pi in $(seq 1 30); do P=$(kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t --eval "rs.hello().primary" 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongodb-replica-0}
-          kubectl -n mongodb exec "$P" -- mongosh --quiet $t --eval "db.getSiblingDB(\"admin\").createUser({user:\"{{params.admin_username}}\",pwd:\"admin123password\",roles:[{role:\"root\",db:\"admin\"}]})" 2>/dev/null || true
+          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+          P=""; for _pi in $(seq 1 30); do P=$(kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- mongosh --quiet $t --eval "rs.hello().primary" 2>/dev/null | cut -d. -f1); [ -n "$P" ] && break; sleep 2; done; P=${P:-mongodb-replica-0}
+          kubectl -n ${BENCH_NS_MONGODB} exec "$P" -- mongosh --quiet $t --eval "db.getSiblingDB(\"admin\").createUser({user:\"{{params.admin_username}}\",pwd:\"admin123password\",roles:[{role:\"root\",db:\"admin\"}]})" 2>/dev/null || true
           '
         sleep: 2
     verify:
@@ -135,10 +136,10 @@ preconditionUnits:
       # the companion secret exists.
       - command: |
           /bin/sh -c '
-          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n mongodb exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
-          pw=$(kubectl -n mongodb get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}
+          t=""; for cca in /etc/tls/ca.crt /etc/mongo-ca/ca.crt; do kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- ls $cca >/dev/null 2>&1 && { t="--tls --tlsAllowInvalidHostnames --tlsAllowInvalidCertificates --tlsCAFile $cca"; break; }; done
+          pw=$(kubectl -n ${BENCH_NS_MONGODB} get secret admin-user-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); pw=${pw:-admin123password}
           for _vi in $(seq 1 20); do
-            kubectl -n mongodb exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1 && exit 0
+            kubectl -n ${BENCH_NS_MONGODB} exec mongodb-replica-0 -- mongosh --quiet $t "mongodb://{{params.admin_username}}:$pw@localhost:27017/admin?directConnection=true" --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1 && exit 0
             sleep 3
           done
           exit 1
@@ -168,20 +169,20 @@ preconditionUnits:
       # must be re-planted.
       - command: |
           /bin/sh -c '
-          lbl=$(kubectl -n mongodb get sts {{params.cluster_prefix}} -o jsonpath="{.spec.template.metadata.labels.{{params.template_label_key}}}" 2>/dev/null)
-          mem=$(kubectl -n mongodb get sts {{params.cluster_prefix}} -o jsonpath="{.spec.template.spec.containers[0].resources.requests.memory}" 2>/dev/null)
+          lbl=$(kubectl -n ${BENCH_NS_MONGODB} get sts {{params.cluster_prefix}} -o jsonpath="{.spec.template.metadata.labels.{{params.template_label_key}}}" 2>/dev/null)
+          mem=$(kubectl -n ${BENCH_NS_MONGODB} get sts {{params.cluster_prefix}} -o jsonpath="{.spec.template.spec.containers[0].resources.requests.memory}" 2>/dev/null)
           [ "$lbl" != "{{params.template_label_value}}" ] || [ "$mem" = "{{params.faulty_request_memory}}" ]
           '
         timeout_sec: 15
     apply:
       - command: |
-          /bin/sh -c 'kubectl -n mongodb patch sts {{params.cluster_prefix}} --type=json -p='\''[{"op":"replace","path":"/spec/template/metadata/labels/{{params.template_label_key}}","value":"disabled"},{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"{{params.faulty_request_memory}}"},{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"{{params.faulty_limit_memory}}"}]'\'' 2>/dev/null || kubectl -n mongodb patch sts {{params.cluster_prefix}} --type=merge -p '\''{"spec":{"template":{"metadata":{"labels":{"{{params.template_label_key}}":"disabled"}},"spec":{"containers":[{"name":"mongod","resources":{"requests":{"memory":"{{params.faulty_request_memory}}"},"limits":{"memory":"{{params.faulty_limit_memory}}"}}}]}}}}'\'''
+          /bin/sh -c 'kubectl -n ${BENCH_NS_MONGODB} patch sts {{params.cluster_prefix}} --type=json -p='\''[{"op":"replace","path":"/spec/template/metadata/labels/{{params.template_label_key}}","value":"disabled"},{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"{{params.faulty_request_memory}}"},{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"{{params.faulty_limit_memory}}"}]'\'' 2>/dev/null || kubectl -n ${BENCH_NS_MONGODB} patch sts {{params.cluster_prefix}} --type=merge -p '\''{"spec":{"template":{"metadata":{"labels":{"{{params.template_label_key}}":"disabled"}},"spec":{"containers":[{"name":"mongod","resources":{"requests":{"memory":"{{params.faulty_request_memory}}"},"limits":{"memory":"{{params.faulty_limit_memory}}"}}}]}}}}'\'''
         sleep: 2
-      - command: "kubectl -n mongodb delete pod -l app={{params.cluster_prefix}}"
+      - command: "kubectl -n ${BENCH_NS_MONGODB} delete pod -l app={{params.cluster_prefix}}"
         sleep: 2
     verify:
       - command: |
-          /bin/sh -c 'lbl=$(kubectl -n mongodb get sts {{params.cluster_prefix}} -o jsonpath="{.spec.template.metadata.labels.{{params.template_label_key}}}" 2>/dev/null); [ "$lbl" = "disabled" ]'
+          /bin/sh -c 'lbl=$(kubectl -n ${BENCH_NS_MONGODB} get sts {{params.cluster_prefix}} -o jsonpath="{.spec.template.metadata.labels.{{params.template_label_key}}}" 2>/dev/null); [ "$lbl" = "disabled" ]'
         timeout_sec: 15
 
 oracle:

@@ -13,9 +13,9 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from common.oracle_lib import curl_dashboard_status, service_ports  # noqa: E402
+from common.oracle_lib import bench_namespace, curl_dashboard_status, service_ports  # noqa: E402
 
-NAMESPACE = "ray"
+NAMESPACE = bench_namespace()
 HEAD = "ray-head"
 CURL_POD = "curl-test"
 # Param-aware: a workflow can override dashboard_port. Read it from the env

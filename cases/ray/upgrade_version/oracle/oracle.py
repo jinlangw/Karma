@@ -16,6 +16,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from common.oracle_lib import (  # noqa: E402
+    bench_namespace,
     deployment_image,
     deployment_ready_replicas,
     ray_worker_raylet_count,
@@ -23,7 +24,7 @@ from common.oracle_lib import (  # noqa: E402
     wait_ready_replicas,
 )
 
-NAMESPACE = "ray"
+NAMESPACE = bench_namespace()
 HEAD = "ray-head"
 WORKER = "ray-worker"
 # Param-aware: a workflow can override to_image (the target upgrade image).

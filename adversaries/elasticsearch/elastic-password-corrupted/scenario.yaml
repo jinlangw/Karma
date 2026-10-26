@@ -10,7 +10,7 @@
 
 params:
   namespace:
-    default: elasticsearch
+    default: ${BENCH_NS_ELASTICSEARCH}
     description: Namespace the Elasticsearch cluster and password secret reside in.
   password_secret_name:
     default: elastic-password

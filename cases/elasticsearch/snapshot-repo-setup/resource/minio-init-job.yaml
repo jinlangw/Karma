@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: minio-init
-  namespace: elasticsearch
+  namespace: ${BENCH_NS_ELASTICSEARCH}
 spec:
   template:
     metadata:
@@ -12,7 +12,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: mc
-          image: minio/mc:latest
+          image: ghcr.io/netvark/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
           env:
             - name: MINIO_ROOT_USER
               valueFrom:
@@ -30,7 +30,7 @@ spec:
             - |
               set -e
               for i in $(seq 1 60); do
-                mc alias set local http://minio.elasticsearch.svc.cluster.local:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" && break
+                mc alias set local http://minio.${BENCH_NS_ELASTICSEARCH}.svc.cluster.local:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" && break
                 sleep 2
               done
               mc mb -p local/es-backups || true

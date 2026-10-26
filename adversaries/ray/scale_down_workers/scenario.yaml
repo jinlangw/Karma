@@ -6,14 +6,14 @@
 # than intended, causing resource shortfalls for pending jobs. The agent must
 # detect the regressed worker count and restore the target replica count.
 #
-# Targets the literal `ray` namespace used by all Ray cases.
+# Targets the namespace bound to this Ray stage.
 #
 # Deploy: scale ray-worker down to wrong_replicas.
 # Lift:   if the agent has not already scaled back up, restore to restore_replicas.
 
 params:
   namespace:
-    default: ray
+    default: ${BENCH_NS_RAY}
     description: Namespace the Ray cluster runs in.
   deployment_name:
     default: ray-worker

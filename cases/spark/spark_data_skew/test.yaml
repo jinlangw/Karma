@@ -23,49 +23,49 @@ prompt: |
   STEP 1: CHECK THE ENVIRONMENT
   ```bash
   # Check cluster and job status
-  kubectl get pods -n spark-skew
-  kubectl get jobs -n spark-skew
+  kubectl get pods -n ${BENCH_NS_SPARK_SKEW}
+  kubectl get jobs -n ${BENCH_NS_SPARK_SKEW}
 
   # Check Spark master logs
-  kubectl logs -n spark-skew -l app=spark-master
+  kubectl logs -n ${BENCH_NS_SPARK_SKEW} -l app=spark-master
   ```
 
   STEP 2: OBSERVE THE BASELINE
   ```bash
   # Check baseline job status — it must run to completion
-  kubectl get job spark-skew-baseline -n spark-skew
+  kubectl get job spark-skew-baseline -n ${BENCH_NS_SPARK_SKEW}
 
   # Watch baseline job logs - observe the skew ratio and slow performance
-  kubectl logs -n spark-skew -l strategy=baseline -f
+  kubectl logs -n ${BENCH_NS_SPARK_SKEW} -l strategy=baseline -f
   ```
 
   STEP 3: APPLY BROADCAST JOIN OPTIMIZATION
   ```bash
   # Apply the broadcast join job
-  kubectl apply -f cases/spark/spark_data_skew/resource/skew-job-broadcast.yaml
+  envsubst '$BENCH_NS_SPARK_SKEW' < cases/spark/spark_data_skew/resource/skew-job-broadcast.yaml | kubectl apply -f -
 
   # Watch the broadcast job - should be faster!
-  kubectl logs -n spark-skew -l strategy=broadcast -f
+  kubectl logs -n ${BENCH_NS_SPARK_SKEW} -l strategy=broadcast -f
   ```
 
   STEP 4: APPLY AQE OPTIMIZATION
   ```bash
   # Apply the AQE (Adaptive Query Execution) job
-  kubectl apply -f cases/spark/spark_data_skew/resource/skew-job-aqe.yaml
+  envsubst '$BENCH_NS_SPARK_SKEW' < cases/spark/spark_data_skew/resource/skew-job-aqe.yaml | kubectl apply -f -
 
   # Watch the AQE job - Spark auto-handles skew
-  kubectl logs -n spark-skew -l strategy=aqe -f
+  kubectl logs -n ${BENCH_NS_SPARK_SKEW} -l strategy=aqe -f
   ```
 
   STEP 5: COMPARE RESULTS
   ```bash
   # Check all jobs completed
-  kubectl get jobs -n spark-skew
+  kubectl get jobs -n ${BENCH_NS_SPARK_SKEW}
 
   # View all job logs to compare performance
-  kubectl logs -n spark-skew -l strategy=baseline --tail=20
-  kubectl logs -n spark-skew -l strategy=broadcast --tail=20
-  kubectl logs -n spark-skew -l strategy=aqe --tail=20
+  kubectl logs -n ${BENCH_NS_SPARK_SKEW} -l strategy=baseline --tail=20
+  kubectl logs -n ${BENCH_NS_SPARK_SKEW} -l strategy=broadcast --tail=20
+  kubectl logs -n ${BENCH_NS_SPARK_SKEW} -l strategy=aqe --tail=20
   ```
 
   SUCCESS CRITERIA (graded):
@@ -77,7 +77,8 @@ prompt: |
   baseline and your optimization strategy in the job logs.
 
 namespace_contract:
-  required_roles: []
+  required_roles:
+    - spark_skew
 
 metrics:
   - time_to_first_mutation
@@ -92,25 +93,25 @@ preconditionUnits:
   - name: spark_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n spark-skew get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_SPARK_SKEW} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
     apply:
-      - command: "kubectl delete namespace spark-skew --ignore-not-found=true --wait=false"
+      - command: "kubectl delete namespace ${BENCH_NS_SPARK_SKEW} --ignore-not-found=true --wait=false"
         sleep: 1
-      - command: "/bin/sh -c 'kubectl wait --for=delete namespace/spark-skew --timeout=300s 2>/dev/null || true'"
+      - command: "/bin/sh -c 'kubectl wait --for=delete namespace/${BENCH_NS_SPARK_SKEW} --timeout=300s 2>/dev/null || true'"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_data_skew/resource/namespace.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_SKEW' < cases/spark/spark_data_skew/resource/namespace.yaml | kubectl apply -f -"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_data_skew/resource/rbac.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_SKEW' < cases/spark/spark_data_skew/resource/rbac.yaml | kubectl apply -f -"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_data_skew/resource/scripts-configmap.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_SKEW' < cases/spark/spark_data_skew/resource/scripts-configmap.yaml | kubectl apply -f -"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_data_skew/resource/spark-cluster.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_SKEW' < cases/spark/spark_data_skew/resource/spark-cluster.yaml | kubectl apply -f -"
         sleep: 15
-      - command: "kubectl apply -f cases/spark/spark_data_skew/resource/skew-job.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_SKEW' < cases/spark/spark_data_skew/resource/skew-job.yaml | kubectl apply -f -"
         sleep: 3
     verify:
-      - command: "kubectl -n spark-skew get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_SPARK_SKEW} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
 oracle:

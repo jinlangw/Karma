@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: es-cluster
-  namespace: elasticsearch
+  namespace: ${BENCH_NS_ELASTICSEARCH}
 spec:
   serviceName: es-cluster
   podManagementPolicy: Parallel
@@ -70,7 +70,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: es-transform
-  namespace: elasticsearch
+  namespace: ${BENCH_NS_ELASTICSEARCH}
 spec:
   serviceName: es-transform
   podManagementPolicy: Parallel

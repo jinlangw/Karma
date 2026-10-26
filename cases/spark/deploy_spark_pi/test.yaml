@@ -21,25 +21,25 @@ prompt: |
   Diagnostic Commands:
   ```bash
   # Check job status
-  kubectl get job spark-pi -n spark-pi
+  kubectl get job spark-pi -n ${BENCH_NS_SPARK_PI}
 
   # Check pod status
-  kubectl get pods -n spark-pi
+  kubectl get pods -n ${BENCH_NS_SPARK_PI}
 
   # Check job pod logs
-  kubectl logs -n spark-pi -l app=spark-pi
+  kubectl logs -n ${BENCH_NS_SPARK_PI} -l app=spark-pi
 
   # Check events for errors
-  kubectl get events -n spark-pi --sort-by='.lastTimestamp'
+  kubectl get events -n ${BENCH_NS_SPARK_PI} --sort-by='.lastTimestamp'
 
   # Check RBAC permissions
-  kubectl get role spark-pi-role -n spark-pi -o yaml
+  kubectl get role spark-pi-role -n ${BENCH_NS_SPARK_PI} -o yaml
   ```
 
   Fix Commands:
   ```bash
   # Delete failed job first
-  kubectl delete job spark-pi -n spark-pi
+  kubectl delete job spark-pi -n ${BENCH_NS_SPARK_PI}
 
   # Fix the job YAML and re-apply:
   # 1. Change image from "{{params.spark_image}}-nonexistent" to "{{params.spark_image}}"
@@ -47,11 +47,11 @@ prompt: |
   # 3. Change memory from "512" to "512Mi"
 
   # Fix RBAC - add "pods" to resources:
-  kubectl patch role spark-pi-role -n spark-pi --type=json \
+  kubectl patch role spark-pi-role -n ${BENCH_NS_SPARK_PI} --type=json \
     -p='[{"op": "add", "path": "/rules/0/resources/-", "value": "pods"}]'
 
   # Re-apply the fixed job
-  kubectl apply -f cases/spark/deploy_spark_pi/resource/spark-pi-job.yaml
+  /bin/sh -c 'export BENCH_PARAM_SPARK_IMAGE=${BENCH_PARAM_SPARK_IMAGE:-apache/spark:3.5.3}; export BENCH_PARAM_SPARK_VERSION=${BENCH_PARAM_SPARK_IMAGE##*:}; envsubst '\''$BENCH_NS_SPARK_PI $BENCH_PARAM_SPARK_IMAGE $BENCH_PARAM_SPARK_VERSION'\'' < cases/spark/deploy_spark_pi/resource/spark-pi-job.yaml | kubectl apply -f -'
   ```
 
   Success criteria:
@@ -65,7 +65,8 @@ params:
     description: Container image used for the SparkPi job
 
 namespace_contract:
-  required_roles: []
+  required_roles:
+    - spark_pi
 
 metrics:
   - time_to_first_mutation
@@ -86,21 +87,21 @@ preconditionUnits:
   - name: spark_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n spark-pi get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_SPARK_PI} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
     apply:
-      - command: "kubectl delete namespace spark-pi --ignore-not-found=true --wait=false"
+      - command: "kubectl delete namespace ${BENCH_NS_SPARK_PI} --ignore-not-found=true --wait=false"
         sleep: 1
-      - command: "/bin/sh -c 'kubectl wait --for=delete namespace/spark-pi --timeout=300s 2>/dev/null || true'"
+      - command: "/bin/sh -c 'kubectl wait --for=delete namespace/${BENCH_NS_SPARK_PI} --timeout=300s 2>/dev/null || true'"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/deploy_spark_pi/resource/namespace.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_PI' < cases/spark/deploy_spark_pi/resource/namespace.yaml | kubectl apply -f -"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/deploy_spark_pi/resource/spark-rbac.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_PI' < cases/spark/deploy_spark_pi/resource/spark-rbac.yaml | kubectl apply -f -"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/deploy_spark_pi/resource/spark-cluster.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_PI' < cases/spark/deploy_spark_pi/resource/spark-cluster.yaml | kubectl apply -f -"
         sleep: 15
     verify:
-      - command: "kubectl -n spark-pi get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_SPARK_PI} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
   # Unit 2 -- (re)plant the SparkPi Job fault carrying THIS scheduling's image.
   # P16: a Job's pod template is IMMUTABLE, so re-applying the manifest onto an
@@ -116,21 +117,21 @@ preconditionUnits:
   #
   # P18: render the Job manifest from the spark_image param via envsubst so a
   # workflow override is solvable. Derive the jar version from the same tag;
-  # whitelist ONLY the two var names in single quotes so envsubst leaves the
+  # whitelist the namespace var and two param names so envsubst leaves the
   # in-container $SPARK_LOCAL_IP/$(hostname -i)/$EXIT_CODE runtime refs intact.
   # The "-nonexistent" fault stays on the tag.
   - name: spark_pi_job
     on_probe_fail: skip
     probe:
-      - command: "/bin/sh -c 'kubectl -n spark-pi get job spark-pi -o jsonpath=\"{.spec.template.spec.containers[0].image}\" 2>/dev/null | grep -qF \"${BENCH_PARAM_SPARK_IMAGE:-apache/spark:3.5.3}\"'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_SPARK_PI} get job spark-pi -o jsonpath=\"{.spec.template.spec.containers[0].image}\" 2>/dev/null | grep -qF \"${BENCH_PARAM_SPARK_IMAGE:-apache/spark:3.5.3}\"'"
         timeout_sec: 10
     apply:
-      - command: "/bin/sh -c 'kubectl -n spark-pi delete job spark-pi --ignore-not-found=true --wait=true 2>/dev/null; kubectl -n spark-pi wait --for=delete job/spark-pi --timeout=60s 2>/dev/null || true'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_SPARK_PI} delete job spark-pi --ignore-not-found=true --wait=true 2>/dev/null; kubectl -n ${BENCH_NS_SPARK_PI} wait --for=delete job/spark-pi --timeout=60s 2>/dev/null || true'"
         sleep: 2
-      - command: "/bin/sh -c 'export BENCH_PARAM_SPARK_IMAGE=${BENCH_PARAM_SPARK_IMAGE:-apache/spark:3.5.3}; export BENCH_PARAM_SPARK_VERSION=${BENCH_PARAM_SPARK_IMAGE##*:}; envsubst '\\''${BENCH_PARAM_SPARK_IMAGE} ${BENCH_PARAM_SPARK_VERSION}'\\'' < cases/spark/deploy_spark_pi/resource/spark-pi-job.yaml | kubectl apply -f -'"
+      - command: "/bin/sh -c 'export BENCH_PARAM_SPARK_IMAGE=${BENCH_PARAM_SPARK_IMAGE:-apache/spark:3.5.3}; export BENCH_PARAM_SPARK_VERSION=${BENCH_PARAM_SPARK_IMAGE##*:}; envsubst '\\''$BENCH_NS_SPARK_PI ${BENCH_PARAM_SPARK_IMAGE} ${BENCH_PARAM_SPARK_VERSION}'\\'' < cases/spark/deploy_spark_pi/resource/spark-pi-job.yaml | kubectl apply -f -'"
         sleep: 5
     verify:
-      - command: "kubectl -n spark-pi get job spark-pi"
+      - command: "kubectl -n ${BENCH_NS_SPARK_PI} get job spark-pi"
         timeout_sec: 10
 
 oracle:

@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: auth-checker
-  namespace: elasticsearch
+  namespace: ${BENCH_NS_ELASTICSEARCH}
 spec:
   replicas: 1
   selector:
@@ -34,7 +34,7 @@ spec:
                 - -c
                 - |
                   curl -s --max-time 5 -u elastic:${ELASTIC_PASSWORD} \
-                    http://es-http.elasticsearch.svc:9200/_security/_authenticate \
+                    http://es-http.${BENCH_NS_ELASTICSEARCH}.svc:9200/_security/_authenticate \
                     | grep -q '"username":"elastic"'
             initialDelaySeconds: 10
             periodSeconds: 5

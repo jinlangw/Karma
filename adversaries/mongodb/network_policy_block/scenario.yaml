@@ -1,13 +1,13 @@
 # mongodb/adversarial/network_policy_block
 #
-# Applies a deny-all NetworkPolicy to the mongodb namespace while the agent is
+# Applies a deny-all NetworkPolicy to the parameterized MongoDB namespace while the agent is
 # working, blocking port 27017 between replica set members. This simulates a
 # misconfigured security policy pushed by a platform team. Elections stall, the
 # primary may step down, and inter-member replication stops. The agent must
 # detect that the NetworkPolicy is blocking traffic and remove or correct it to
 # restore replication.
 #
-# Targets the literal `mongodb` namespace.
+# Targets the MongoDB namespace parameter, defaulting to `${BENCH_NS_MONGODB}`.
 #
 # Deploy: apply a NetworkPolicy that selects all pods and allows no ingress on
 #         port 27017 from replica-set peers.
@@ -15,7 +15,7 @@
 
 params:
   namespace:
-    default: mongodb
+    default: ${BENCH_NS_MONGODB}
     description: Namespace where the blocking NetworkPolicy is applied.
   policy_name:
     default: adversary-deny-mongo
@@ -27,7 +27,7 @@ deploy:
     - command: "kubectl -n {{params.namespace}} get namespace {{params.namespace}}"
       timeout_sec: 10
   apply:
-    - command: >-
+    - command: |
         /bin/sh -c "cat <<'EOF' | kubectl apply -f -
         apiVersion: networking.k8s.io/v1
         kind: NetworkPolicy

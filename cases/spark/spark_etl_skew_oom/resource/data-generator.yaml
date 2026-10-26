@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: data-generator
-  namespace: spark-etl
+  namespace: ${BENCH_NS_SPARK_ETL}
 spec:
   replicas: 1
   selector:

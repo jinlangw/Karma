@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: spark-pi-team-b
-  namespace: spark-team-b
+  namespace: ${BENCH_NS_SPARK_TEAM_B}
 spec:
   backoffLimit: 0
   template:

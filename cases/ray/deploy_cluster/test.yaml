@@ -2,7 +2,7 @@
 # Deploy a Ray head, head Service, and worker deployment from provided manifests
 
 prompt: |
-  A ray-client pod is running in the ray namespace, but no Ray cluster exists yet.
+  A ray-client pod is running in the namespace ${BENCH_NS_RAY}, but no Ray cluster exists yet.
 
   Your task: deploy a Ray head, a Ray head Service, and a Ray worker deployment
   using the manifests in:
@@ -16,7 +16,7 @@ prompt: |
 
   Use this command to validate:
   ```bash
-  kubectl -n ray exec ray-client -- python -c "import ray; ray.init(address='ray-head:6379'); print('ok'); ray.shutdown()"
+  kubectl -n ${BENCH_NS_RAY} exec ray-client -- python -c "import ray; ray.init(address='ray-head:6379'); print('ok'); ray.shutdown()"
   ```
 
   Success criteria: both deployments are ready and the command prints "ok".
@@ -27,7 +27,8 @@ params:
     description: Number of replicas for the Ray worker deployment
 
 namespace_contract:
-  required_roles: []
+  required_roles:
+    - ray
 
 metrics:
   - time_to_first_mutation
@@ -36,21 +37,21 @@ preconditionUnits:
   - name: ray_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n ray get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_RAY} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
     apply:
-      - command: "/bin/sh -c 'kubectl delete namespace ray --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/ray --timeout=300s 2>/dev/null || true'"
+      - command: "/bin/sh -c 'kubectl delete namespace ${BENCH_NS_RAY} --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/${BENCH_NS_RAY} --timeout=300s 2>/dev/null || true'"
         timeout_sec: 360
         sleep: 2
-      - command: "kubectl create namespace ray"
+      - command: "kubectl create namespace ${BENCH_NS_RAY}"
         sleep: 0
-      - command: "/bin/sh -c 'kubectl -n ray get pod ray-client >/dev/null 2>&1 || kubectl -n ray apply -f cases/ray/deploy_cluster/resource/ray-client.yaml'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_RAY} get pod ray-client >/dev/null 2>&1 || kubectl -n ${BENCH_NS_RAY} apply -f cases/ray/deploy_cluster/resource/ray-client.yaml'"
         sleep: 1
-      - command: "kubectl -n ray wait --for=condition=Ready pod/ray-client --timeout=600s"
+      - command: "kubectl -n ${BENCH_NS_RAY} wait --for=condition=Ready pod/ray-client --timeout=600s"
         timeout_sec: 660
         sleep: 1
     verify:
-      - command: "kubectl -n ray get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_RAY} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
 oracle:

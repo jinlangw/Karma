@@ -7,7 +7,7 @@
 # the replica set re-elects a primary and complete its task against the new
 # primary without assuming the original pod-0 is still writable.
 #
-# Targets the literal `mongodb` namespace. The primary pod is expected to be
+# Targets the MongoDB namespace parameter, defaulting to `${BENCH_NS_MONGODB}`. The primary pod is expected to be
 # mongodb-replica-0 on a freshly-initiated set, but step-down will cause an
 # election and another member may become primary.
 #
@@ -18,7 +18,7 @@
 
 params:
   namespace:
-    default: mongodb
+    default: ${BENCH_NS_MONGODB}
     description: Namespace where the replica set is running.
   primary_pod:
     default: mongodb-replica-0

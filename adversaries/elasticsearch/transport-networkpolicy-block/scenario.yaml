@@ -1,6 +1,6 @@
 # adversaries/elasticsearch/transport-networkpolicy-block
 #
-# A NetworkPolicy is applied to the elasticsearch namespace that drops all ingress on port
+# A NetworkPolicy is applied to the namespace ${BENCH_NS_ELASTICSEARCH} that drops all ingress on port
 # 9300 (Elasticsearch inter-node transport). This simulates a network-hardening change
 # applied in the wrong namespace, or a misconfigured security policy that breaks cluster
 # formation. Nodes can no longer gossip or form quorum; the cluster becomes unavailable
@@ -9,7 +9,7 @@
 
 params:
   namespace:
-    default: elasticsearch
+    default: ${BENCH_NS_ELASTICSEARCH}
     description: Namespace where the NetworkPolicy and Elasticsearch pods reside.
   policy_name:
     default: block-es-transport
@@ -24,8 +24,8 @@ deploy:
     - command: "kubectl -n {{params.namespace}} get statefulset {{params.cluster_prefix}}"
       timeout_sec: 10
   apply:
-    - command: >-
-        kubectl -n {{params.namespace}} apply -f - <<'EOF'
+    - command: |
+        kubectl -n {{params.namespace}} apply -f - <<EOF
         apiVersion: networking.k8s.io/v1
         kind: NetworkPolicy
         metadata:
@@ -78,7 +78,7 @@ lift:
 
 prompt_hints:
   deploy: |
-    Note: a NetworkPolicy may have been applied to the elasticsearch namespace during this task.
+    Note: a NetworkPolicy may have been applied to the namespace {{params.namespace}} during this task.
     Check for NetworkPolicy objects that restrict port 9300 (transport) if nodes cannot communicate.
   active: |
     Reminder: a NetworkPolicy blocking port 9300 may still be in effect. Verify inter-node

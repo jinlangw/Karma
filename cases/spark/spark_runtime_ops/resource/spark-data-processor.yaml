@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: spark-data-processor
-  namespace: spark-runtime
+  namespace: ${BENCH_NS_SPARK_RUNTIME}
 spec:
   # Suspended on creation: the agent must resume it (suspend=false) so it runs.
   suspend: true

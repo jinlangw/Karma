@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 
-NAMESPACE = "elasticsearch"
+NAMESPACE = os.environ.get("BENCH_NAMESPACE", "elasticsearch")
 SERVICE = "es-http"
 CURL_POD = "curl-test"
 TRANSFORM_ID = "events-by-service"

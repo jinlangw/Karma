@@ -16,13 +16,14 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from common.oracle_lib import (  # noqa: E402
+    bench_namespace,
     deployment_ready_replicas,
     deployment_spec_replicas,
     ray_worker_raylet_count,
     wait_ready_replicas,
 )
 
-NAMESPACE = "ray"
+NAMESPACE = bench_namespace()
 HEAD = "ray-head"
 WORKER = "ray-worker"
 # Param-aware: a workflow can override target_worker_replicas (e.g. a scale

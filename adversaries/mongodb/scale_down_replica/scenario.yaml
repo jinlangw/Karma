@@ -5,7 +5,7 @@
 # agent's task (scale the replica set to its target size) must detect the
 # regressed member count and restore it rather than trusting the live state.
 #
-# Targets the literal `mongodb` namespace (these cases hardcode -n mongodb), so
+# Targets the MongoDB namespace parameter, defaulting to `${BENCH_NS_MONGODB}`, so
 # the commands set the namespace explicitly rather than relying on a role ns.
 #
 # Deploy: scale statefulset to wrong_replicas.
@@ -13,7 +13,7 @@
 
 params:
   namespace:
-    default: mongodb
+    default: ${BENCH_NS_MONGODB}
     description: Kubernetes namespace the replica-set StatefulSet runs in.
   statefulset_name:
     default: mongodb-replica

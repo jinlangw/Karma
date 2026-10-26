@@ -18,9 +18,9 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from common.oracle_lib import check_trap_baseline, run  # noqa: E402
+from common.oracle_lib import bench_namespace, check_trap_baseline, run  # noqa: E402
 
-NAMESPACE = "ray"
+NAMESPACE = bench_namespace()
 CONFIGMAP = "rollback-rehearsal"
 KEY = "rollback.sh"
 BASELINE_CM = "rollback-rehearsal-baseline"

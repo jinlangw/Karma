@@ -13,7 +13,7 @@ prompt: |
   - The Spark History Server is not running: its deployment references a
     PVC that does not exist and points at the wrong event-log directory
   - Team A's RoleBinding grants access to a ServiceAccount in the wrong
-    namespace ('default' instead of 'spark-team-a')
+    namespace ('${BENCH_NS_SPARK_WRONG}' instead of '${BENCH_NS_SPARK_TEAM_A}')
   - Both teams' SparkPi jobs must be verified end-to-end once the shared
     environment is fixed
 
@@ -28,49 +28,49 @@ prompt: |
      - Correct: {{params.log_dir}} (matches the volume mount path)
 
   3. Team A RoleBinding Namespace (Bug):
-     - Current: subjects[0].namespace = 'default'
-     - Correct: subjects[0].namespace = 'spark-team-a'
+     - Current: subjects[0].namespace = '${BENCH_NS_SPARK_WRONG}'
+     - Correct: subjects[0].namespace = '${BENCH_NS_SPARK_TEAM_A}'
 
   Diagnostic Commands:
   ```bash
   # Check Team A resources
-  kubectl get all -n spark-team-a
-  kubectl get job spark-pi-team-a -n spark-team-a
-  kubectl logs -n spark-team-a -l app=spark-pi-team-a
+  kubectl get all -n ${BENCH_NS_SPARK_TEAM_A}
+  kubectl get job spark-pi-team-a -n ${BENCH_NS_SPARK_TEAM_A}
+  kubectl logs -n ${BENCH_NS_SPARK_TEAM_A} -l app=spark-pi-team-a
 
   # Check Team B resources
-  kubectl get all -n spark-team-b
-  kubectl get job spark-pi-team-b -n spark-team-b
-  kubectl logs -n spark-team-b -l app=spark-pi-team-b
+  kubectl get all -n ${BENCH_NS_SPARK_TEAM_B}
+  kubectl get job spark-pi-team-b -n ${BENCH_NS_SPARK_TEAM_B}
+  kubectl logs -n ${BENCH_NS_SPARK_TEAM_B} -l app=spark-pi-team-b
 
   # Check History Server
-  kubectl get all -n spark-history
-  kubectl describe deployment {{params.deployment_name}} -n spark-history
-  kubectl logs -n spark-history -l app={{params.deployment_name}}
+  kubectl get all -n ${BENCH_NS_SPARK_HISTORY}
+  kubectl describe deployment {{params.deployment_name}} -n ${BENCH_NS_SPARK_HISTORY}
+  kubectl logs -n ${BENCH_NS_SPARK_HISTORY} -l app={{params.deployment_name}}
 
   # Check RoleBindings
-  kubectl get rolebinding spark-role-binding -n spark-team-a -o yaml
+  kubectl get rolebinding spark-role-binding -n ${BENCH_NS_SPARK_TEAM_A} -o yaml
   ```
 
   Fix Commands:
   ```bash
   # Fix Team A RoleBinding
-  kubectl patch rolebinding spark-role-binding -n spark-team-a --type=json \
-    -p='[{"op": "replace", "path": "/subjects/0/namespace", "value": "spark-team-a"}]'
+  kubectl patch rolebinding spark-role-binding -n ${BENCH_NS_SPARK_TEAM_A} --type=json \
+    -p="[{\"op\": \"replace\", \"path\": \"/subjects/0/namespace\", \"value\": \"${BENCH_NS_SPARK_TEAM_A}\"}]"
 
   # Fix History Server PVC reference
-  kubectl patch deployment {{params.deployment_name}} -n spark-history --type=json \
+  kubectl patch deployment {{params.deployment_name}} -n ${BENCH_NS_SPARK_HISTORY} --type=json \
     -p='[{"op": "replace", "path": "/spec/template/spec/volumes/0/persistentVolumeClaim/claimName", "value": "{{params.pvc_name}}"}]'
 
   # Fix History Server log directory
-  kubectl set env deployment/{{params.deployment_name}} -n spark-history \
+  kubectl set env deployment/{{params.deployment_name}} -n ${BENCH_NS_SPARK_HISTORY} \
     SPARK_HISTORY_OPTS="-Dspark.history.fs.logDirectory={{params.log_dir}} -Dspark.history.fs.update.interval=5s"
   ```
 
   Success criteria (graded):
   - Both SparkPi jobs (spark-pi-team-a and spark-pi-team-b) complete successfully
   - Spark History Server pod is running with the correct PVC and log directory
-  - Team A's RoleBinding subject namespace is 'spark-team-a'
+  - Team A's RoleBinding subject namespace is '${BENCH_NS_SPARK_TEAM_A}'
 
   Informational (not graded): the per-team ResourceQuotas remain in place.
 
@@ -86,7 +86,11 @@ params:
     description: Filesystem path the History Server reads event logs from
 
 namespace_contract:
-  required_roles: []
+  required_roles:
+    - spark_team_a
+    - spark_team_b
+    - spark_history
+    - spark_wrong
 
 metrics:
   - time_to_first_mutation
@@ -101,39 +105,39 @@ preconditionUnits:
   - name: spark_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n spark-team-a get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_SPARK_TEAM_A} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
     apply:
-      - command: "kubectl delete namespace spark-team-a --ignore-not-found=true --wait=false"
+      - command: "kubectl delete namespace ${BENCH_NS_SPARK_TEAM_A} --ignore-not-found=true --wait=false"
         sleep: 1
-      - command: "kubectl delete namespace spark-team-b --ignore-not-found=true --wait=false"
+      - command: "kubectl delete namespace ${BENCH_NS_SPARK_TEAM_B} --ignore-not-found=true --wait=false"
         sleep: 1
-      - command: "kubectl delete namespace spark-history --ignore-not-found=true --wait=false"
+      - command: "kubectl delete namespace ${BENCH_NS_SPARK_HISTORY} --ignore-not-found=true --wait=false"
         sleep: 1
-      - command: "/bin/sh -c 'kubectl wait --for=delete namespace/spark-team-a --timeout=300s 2>/dev/null || true; kubectl wait --for=delete namespace/spark-team-b --timeout=300s 2>/dev/null || true; kubectl wait --for=delete namespace/spark-history --timeout=300s 2>/dev/null || true'"
+      - command: "/bin/sh -c 'kubectl wait --for=delete namespace/${BENCH_NS_SPARK_TEAM_A} --timeout=300s 2>/dev/null || true; kubectl wait --for=delete namespace/${BENCH_NS_SPARK_TEAM_B} --timeout=300s 2>/dev/null || true; kubectl wait --for=delete namespace/${BENCH_NS_SPARK_HISTORY} --timeout=300s 2>/dev/null || true'"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_multi_tenant/resource/namespaces.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_TEAM_A $BENCH_NS_SPARK_TEAM_B $BENCH_NS_SPARK_HISTORY $BENCH_NS_SPARK_WRONG' < cases/spark/spark_multi_tenant/resource/namespaces.yaml | kubectl apply -f -"
         sleep: 2
-      - command: "kubectl apply -f cases/spark/spark_multi_tenant/resource/resource-quotas.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_TEAM_A $BENCH_NS_SPARK_TEAM_B $BENCH_NS_SPARK_HISTORY $BENCH_NS_SPARK_WRONG' < cases/spark/spark_multi_tenant/resource/resource-quotas.yaml | kubectl apply -f -"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_multi_tenant/resource/rbac-team-a.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_TEAM_A $BENCH_NS_SPARK_TEAM_B $BENCH_NS_SPARK_HISTORY $BENCH_NS_SPARK_WRONG' < cases/spark/spark_multi_tenant/resource/rbac-team-a.yaml | kubectl apply -f -"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_multi_tenant/resource/rbac-team-b.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_TEAM_A $BENCH_NS_SPARK_TEAM_B $BENCH_NS_SPARK_HISTORY $BENCH_NS_SPARK_WRONG' < cases/spark/spark_multi_tenant/resource/rbac-team-b.yaml | kubectl apply -f -"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_multi_tenant/resource/limitrange-team-b.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_TEAM_A $BENCH_NS_SPARK_TEAM_B $BENCH_NS_SPARK_HISTORY $BENCH_NS_SPARK_WRONG' < cases/spark/spark_multi_tenant/resource/limitrange-team-b.yaml | kubectl apply -f -"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_multi_tenant/resource/history-server.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_TEAM_A $BENCH_NS_SPARK_TEAM_B $BENCH_NS_SPARK_HISTORY $BENCH_NS_SPARK_WRONG' < cases/spark/spark_multi_tenant/resource/history-server.yaml | kubectl apply -f -"
         sleep: 2
-      - command: "kubectl apply -f cases/spark/spark_multi_tenant/resource/spark-cluster-team-a.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_TEAM_A $BENCH_NS_SPARK_TEAM_B $BENCH_NS_SPARK_HISTORY $BENCH_NS_SPARK_WRONG' < cases/spark/spark_multi_tenant/resource/spark-cluster-team-a.yaml | kubectl apply -f -"
         sleep: 10
-      - command: "kubectl apply -f cases/spark/spark_multi_tenant/resource/spark-cluster-team-b.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_TEAM_A $BENCH_NS_SPARK_TEAM_B $BENCH_NS_SPARK_HISTORY $BENCH_NS_SPARK_WRONG' < cases/spark/spark_multi_tenant/resource/spark-cluster-team-b.yaml | kubectl apply -f -"
         sleep: 10
-      - command: "kubectl apply -f cases/spark/spark_multi_tenant/resource/spark-pi-job-team-a.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_TEAM_A $BENCH_NS_SPARK_TEAM_B $BENCH_NS_SPARK_HISTORY $BENCH_NS_SPARK_WRONG' < cases/spark/spark_multi_tenant/resource/spark-pi-job-team-a.yaml | kubectl apply -f -"
         sleep: 2
-      - command: "kubectl apply -f cases/spark/spark_multi_tenant/resource/spark-pi-job-team-b.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_TEAM_A $BENCH_NS_SPARK_TEAM_B $BENCH_NS_SPARK_HISTORY $BENCH_NS_SPARK_WRONG' < cases/spark/spark_multi_tenant/resource/spark-pi-job-team-b.yaml | kubectl apply -f -"
         sleep: 5
     verify:
-      - command: "kubectl -n spark-team-a get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_SPARK_TEAM_A} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
 oracle:

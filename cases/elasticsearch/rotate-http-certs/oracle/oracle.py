@@ -7,7 +7,7 @@ import sys
 import tempfile
 import json
 
-NAMESPACE = "elasticsearch"
+NAMESPACE = os.environ.get("BENCH_NAMESPACE", "elasticsearch")
 SECRET = "es-http-tls"
 OLD_CM = "es-http-old"
 CLIENT_CA_CM = "es-http-ca"

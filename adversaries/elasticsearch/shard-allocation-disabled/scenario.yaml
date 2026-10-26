@@ -9,7 +9,7 @@
 
 params:
   namespace:
-    default: elasticsearch
+    default: ${BENCH_NS_ELASTICSEARCH}
     description: Namespace the Elasticsearch cluster runs in.
   http_service_name:
     default: es-http
