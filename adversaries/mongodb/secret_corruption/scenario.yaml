@@ -6,7 +6,7 @@
 # between the in-cluster MongoDB password and the Secret, update the Secret to
 # the correct value (or rotate both sides consistently) before submitting.
 #
-# Targets the literal `mongodb` namespace. The Secret `admin-user-password` is
+# Targets the MongoDB namespace parameter, defaulting to `${BENCH_NS_MONGODB}`. The Secret `admin-user-password` is
 # deployed by several cases (custom-roles, password-rotation, replica-scaling,
 # mongod-config-update, statefulset-customization, user-management, version-upgrade,
 # version-upgrade-hard).
@@ -16,7 +16,7 @@
 
 params:
   namespace:
-    default: mongodb
+    default: ${BENCH_NS_MONGODB}
     description: Namespace where the admin-user-password Secret lives.
   secret_name:
     default: admin-user-password

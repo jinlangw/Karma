@@ -13,7 +13,7 @@
 
 params:
   namespace:
-    default: ray
+    default: ${BENCH_NS_RAY}
     description: Namespace the Ray cluster runs in.
   deployment_name:
     default: ray-worker

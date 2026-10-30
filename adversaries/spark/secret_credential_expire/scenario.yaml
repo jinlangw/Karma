@@ -7,14 +7,14 @@
 # authentication error. The agent must detect the corrupt secret and replace the
 # api-key with a valid (non-EXPIRED) value.
 #
-# Targets the literal `spark-runtime` namespace used by spark_runtime_ops.
+# Targets the namespace bound to the spark_runtime role used by spark_runtime_ops.
 #
 # Deploy: patch spark-credentials so api-key = "EXPIRED-injected".
 # Lift:   if the agent has not already updated the secret, restore a valid key.
 
 params:
   namespace:
-    default: spark-runtime
+    default: ${BENCH_NS_SPARK_RUNTIME}
     description: Namespace where the spark-credentials Secret lives.
   secret_name:
     default: spark-credentials

@@ -16,7 +16,7 @@ params:
     description: Kubernetes Secret holding the application user's password.
 
 prompt: |
-  A 3-node MongoDB replica set is not deployed in the mongodb namespace.
+  A 3-node MongoDB replica set is not deployed in the ${BENCH_NS_MONGODB} namespace.
 
   Task:
   - Deploy a 3-member replica set with authentication enabled. Back it with a
@@ -25,7 +25,7 @@ prompt: |
     `rs.initiate` `_id` must be exactly `mongodb-replica`, not the `rs0` default).
   - Create a headless Service named `mongodb-replica-svc` (clusterIP: None) that
     governs the StatefulSet, so each member is reachable at its stable DNS name
-    `mongodb-replica-<n>.mongodb-replica-svc.mongodb.svc.cluster.local`.
+    `mongodb-replica-<n>.mongodb-replica-svc.'${BENCH_NS_MONGODB}'.svc.cluster.local`.
   - Create an admin user and an application user.
   - Ensure the replica set is healthy (PRIMARY + SECONDARY members).
   - Confirm data can be written and read from the application database.
@@ -42,7 +42,8 @@ prompt: |
   - No operators or CRDs.
 
 namespace_contract:
-  required_roles: []
+  required_roles:
+    - mongodb
 
 metrics:
   - time_to_first_mutation
@@ -60,15 +61,15 @@ preconditionUnits:
     apply:
       - command: |
           /bin/sh -c '
-          kubectl delete namespace mongodb --ignore-not-found=true; kubectl wait --for=delete namespace/mongodb --timeout=120s || true
+          kubectl delete namespace ${BENCH_NS_MONGODB} --ignore-not-found=true; kubectl wait --for=delete namespace/${BENCH_NS_MONGODB} --timeout=120s || true
           '
         sleep: 2
-      - command: "kubectl create namespace mongodb"
+      - command: "kubectl create namespace ${BENCH_NS_MONGODB}"
         sleep: 1
     verify:
       # The agent deploys MongoDB (see the task), so the precondition only
       # readies a clean namespace -- verify that, not pods that don't exist yet.
-      - command: "kubectl get namespace mongodb -o name"
+      - command: "kubectl get namespace ${BENCH_NS_MONGODB} -o name"
         timeout_sec: 10
 
 oracle:

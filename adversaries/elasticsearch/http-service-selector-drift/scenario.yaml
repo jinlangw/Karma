@@ -9,7 +9,7 @@
 
 params:
   namespace:
-    default: elasticsearch
+    default: ${BENCH_NS_ELASTICSEARCH}
     description: Namespace the Elasticsearch Service and pods reside in.
   http_service_name:
     default: es-http
@@ -57,7 +57,7 @@ lift:
 
 prompt_hints:
   deploy: |
-    Note: an external process may have modified Service selectors in the elasticsearch namespace.
+    Note: an external process may have modified Service selectors in the namespace {{params.namespace}}.
     Verify the es-http Service selector matches the running pod labels before assuming HTTP is reachable.
   active: |
     Reminder: the es-http Service selector may be pointing at the wrong app label.

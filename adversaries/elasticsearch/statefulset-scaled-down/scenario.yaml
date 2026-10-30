@@ -9,7 +9,7 @@
 
 params:
   namespace:
-    default: elasticsearch
+    default: ${BENCH_NS_ELASTICSEARCH}
     description: Namespace the Elasticsearch StatefulSet runs in.
   statefulset_name:
     default: es-cluster

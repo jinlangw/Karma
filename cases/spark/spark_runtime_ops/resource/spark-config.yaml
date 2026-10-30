@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: spark-config
-  namespace: spark-runtime
+  namespace: ${BENCH_NS_SPARK_RUNTIME}
 data:
   # Incorrect value: 256m is below the required minimum of 512m. The agent must
   # raise spark.executor.memory to at least "512m" using kubectl.

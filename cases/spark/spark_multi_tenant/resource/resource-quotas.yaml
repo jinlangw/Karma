@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ResourceQuota
 metadata:
   name: team-a-quota
-  namespace: spark-team-a
+  namespace: ${BENCH_NS_SPARK_TEAM_A}
 spec:
   hard:
     requests.cpu: "4"
@@ -15,7 +15,7 @@ apiVersion: v1
 kind: ResourceQuota
 metadata:
   name: team-b-quota
-  namespace: spark-team-b
+  namespace: ${BENCH_NS_SPARK_TEAM_B}
 spec:
   hard:
     requests.cpu: "2"

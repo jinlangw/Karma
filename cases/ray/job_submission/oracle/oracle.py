@@ -14,7 +14,9 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-NAMESPACE = "ray"
+from common.oracle_lib import bench_namespace  # noqa: E402
+
+NAMESPACE = bench_namespace()
 CLIENT = "ray-client"
 JOB_PATH = "/opt/job.py"
 # Param-aware: a workflow can override expected_output. Read it from the env

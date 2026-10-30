@@ -47,7 +47,8 @@ params:
     description: "ConfigMap recording the transform checkpoint before the fault"
 
 namespace_contract:
-  required_roles: []
+  required_roles:
+    - elasticsearch
 
 metrics:
   - time_to_first_mutation
@@ -61,25 +62,26 @@ preconditionUnits:
   - name: es_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_ELASTICSEARCH} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
     apply:
-      - command: "/bin/sh -c 'kubectl delete namespace elasticsearch --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/elasticsearch --timeout=400s || true'"
+      - command: "/bin/sh -c 'kubectl delete namespace ${BENCH_NS_ELASTICSEARCH} --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/${BENCH_NS_ELASTICSEARCH} --timeout=400s || true'"
         sleep: 1
-      - command: "kubectl create namespace elasticsearch"
+      - command: "kubectl create namespace ${BENCH_NS_ELASTICSEARCH}"
         sleep: 1
-      - command: "kubectl -n elasticsearch apply -f cases/elasticsearch/transform-job-recovery/resource/"
+      - command: >-
+          { first=1; for f in cases/elasticsearch/transform-job-recovery/resource/*.yaml; do if [ "$first" -eq 0 ]; then printf '\n---\n'; fi; first=0; envsubst '$BENCH_NS_ELASTICSEARCH' < "$f"; done; } | kubectl -n "$BENCH_NS_ELASTICSEARCH" apply -f -
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app={{params.cluster_prefix}} --timeout=600s"
+      - command: "kubectl -n ${BENCH_NS_ELASTICSEARCH} wait --for=condition=ready pod -l app={{params.cluster_prefix}} --timeout=600s"
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app={{params.transform_cluster_prefix}} --timeout=300s"
+      - command: "kubectl -n ${BENCH_NS_ELASTICSEARCH} wait --for=condition=ready pod -l app={{params.transform_cluster_prefix}} --timeout=300s"
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=300s"
+      - command: "kubectl -n ${BENCH_NS_ELASTICSEARCH} wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=300s"
         sleep: 1
       - command: |
           /bin/sh -c '
           for i in $(seq 1 30); do
-            kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -s --max-time 5 "http://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s" | grep -q status && exit 0
+            kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -s --max-time 5 "http://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s" | grep -q status && exit 0
             sleep 2
           done
           exit 1
@@ -87,8 +89,8 @@ preconditionUnits:
         sleep: 1
       - command: |
           /bin/sh -c '
-          kubectl -n elasticsearch exec {{params.curl_pod_name}} -- /bin/sh -c '\''
-          cat <<EOF | curl -s -XPOST http://{{params.http_service_name}}.elasticsearch.svc:9200/_bulk?refresh=true -H "Content-Type: application/x-ndjson" --data-binary @-
+          kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- env BENCH_NS_ELASTICSEARCH="${BENCH_NS_ELASTICSEARCH}" /bin/sh -c '\''
+          cat <<EOF | curl -s -XPOST http://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/_bulk?refresh=true -H "Content-Type: application/x-ndjson" --data-binary @-
           {"index":{"_index":"{{params.source_index_name}}","_id":"seed-1"}}
           {"service":"api","@timestamp":"2026-01-01T00:00:00Z"}
           {"index":{"_index":"{{params.source_index_name}}","_id":"seed-2"}}
@@ -101,33 +103,33 @@ preconditionUnits:
         sleep: 1
       - command: |
           /bin/sh -c '
-          kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -s -XPUT http://{{params.http_service_name}}.elasticsearch.svc:9200/_transform/{{params.transform_id}} -H "Content-Type: application/json" -d "{\"source\":{\"index\":\"{{params.source_index_name}}\"},\"dest\":{\"index\":\"{{params.dest_index_name}}\"},\"pivot\":{\"group_by\":{\"service\":{\"terms\":{\"field\":\"service.keyword\"}}},\"aggregations\":{\"event_count\":{\"value_count\":{\"field\":\"service.keyword\"}}}},\"sync\":{\"time\":{\"field\":\"@timestamp\",\"delay\":\"1s\"}}}"
+          kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -s -XPUT http://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/_transform/{{params.transform_id}} -H "Content-Type: application/json" -d "{\"source\":{\"index\":\"{{params.source_index_name}}\"},\"dest\":{\"index\":\"{{params.dest_index_name}}\"},\"pivot\":{\"group_by\":{\"service\":{\"terms\":{\"field\":\"service.keyword\"}}},\"aggregations\":{\"event_count\":{\"value_count\":{\"field\":\"service.keyword\"}}}},\"sync\":{\"time\":{\"field\":\"@timestamp\",\"delay\":\"1s\"}}}"
           '
         sleep: 1
-      - command: "kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -s -XPOST http://{{params.http_service_name}}.elasticsearch.svc:9200/_transform/{{params.transform_id}}/_start"
+      - command: "kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -s -XPOST http://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/_transform/{{params.transform_id}}/_start"
         sleep: 1
       - command: |
           /bin/sh -c '
           for i in $(seq 1 30); do
-            checkpoint=$(kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -s --max-time 5 http://{{params.http_service_name}}.elasticsearch.svc:9200/_transform/{{params.transform_id}}/_stats 2>/dev/null | python3 -c "import json,sys; data=json.load(sys.stdin); t=data.get(\"transforms\",[]); print(t[0].get(\"checkpointing\",{}).get(\"last\",{}).get(\"checkpoint\",0) if t else 0)" 2>/dev/null || echo 0)
+            checkpoint=$(kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -s --max-time 5 http://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/_transform/{{params.transform_id}}/_stats 2>/dev/null | python3 -c "import json,sys; data=json.load(sys.stdin); t=data.get(\"transforms\",[]); print(t[0].get(\"checkpointing\",{}).get(\"last\",{}).get(\"checkpoint\",0) if t else 0)" 2>/dev/null || echo 0)
             if [ "${checkpoint}" -ge 1 ]; then
-              kubectl -n elasticsearch create configmap {{params.checkpoint_configmap}} --from-literal=checkpoint_before="${checkpoint}" --dry-run=client -o yaml | kubectl apply -f -
+              kubectl -n ${BENCH_NS_ELASTICSEARCH} create configmap {{params.checkpoint_configmap}} --from-literal=checkpoint_before="${checkpoint}" --dry-run=client -o yaml | kubectl apply -f -
               exit 0
             fi
             sleep 2
           done
-          kubectl -n elasticsearch create configmap {{params.checkpoint_configmap}} --from-literal=checkpoint_before="0" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n ${BENCH_NS_ELASTICSEARCH} create configmap {{params.checkpoint_configmap}} --from-literal=checkpoint_before="0" --dry-run=client -o yaml | kubectl apply -f -
           exit 0
           '
         sleep: 1
-      - command: "kubectl -n elasticsearch scale sts/{{params.transform_cluster_prefix}} --replicas=0"
+      - command: "kubectl -n ${BENCH_NS_ELASTICSEARCH} scale sts/{{params.transform_cluster_prefix}} --replicas=0"
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=delete pod -l app={{params.transform_cluster_prefix}} --timeout=300s"
+      - command: "kubectl -n ${BENCH_NS_ELASTICSEARCH} wait --for=delete pod -l app={{params.transform_cluster_prefix}} --timeout=300s"
         sleep: 1
       - command: |
           /bin/sh -c '
-          kubectl -n elasticsearch exec {{params.curl_pod_name}} -- /bin/sh -c '\''
-          cat <<EOF | curl -s -XPOST http://{{params.http_service_name}}.elasticsearch.svc:9200/_bulk?refresh=true -H "Content-Type: application/x-ndjson" --data-binary @-
+          kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- env BENCH_NS_ELASTICSEARCH="${BENCH_NS_ELASTICSEARCH}" /bin/sh -c '\''
+          cat <<EOF | curl -s -XPOST http://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/_bulk?refresh=true -H "Content-Type: application/x-ndjson" --data-binary @-
           {"index":{"_index":"{{params.source_index_name}}","_id":"seed-new-1"}}
           {"service":"api","@timestamp":"2026-01-02T00:00:00Z"}
           {"index":{"_index":"{{params.source_index_name}}","_id":"seed-new-2"}}
@@ -137,7 +139,7 @@ preconditionUnits:
           '
         sleep: 1
     verify:
-      - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_ELASTICSEARCH} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
   - name: transform_scenario_fixture
@@ -162,27 +164,27 @@ preconditionUnits:
       # transform may be live but the ConfigMap is absent (es_env_ready's apply was
       # skipped), the probe fails and the fixture RUNS, rebuilding the baseline +
       # re-injecting the fault the oracle depends on.
-      - command: "kubectl -n elasticsearch get configmap {{params.checkpoint_configmap}} >/dev/null 2>&1"
+      - command: "kubectl -n ${BENCH_NS_ELASTICSEARCH} get configmap {{params.checkpoint_configmap}} >/dev/null 2>&1"
         timeout_sec: 30
     apply:
       # Ensure the capacity nodeset StatefulSet exists, then bring it Ready so the
       # transform has somewhere to run while we build the baseline.
-      - command: "/bin/sh -c 'kubectl -n elasticsearch get sts {{params.transform_cluster_prefix}} >/dev/null 2>&1 || kubectl -n elasticsearch apply -f cases/elasticsearch/transform-job-recovery/resource/statefulset.yaml || true'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_ELASTICSEARCH} get sts {{params.transform_cluster_prefix}} >/dev/null 2>&1 || envsubst \\$BENCH_NS_ELASTICSEARCH < cases/elasticsearch/transform-job-recovery/resource/statefulset.yaml | kubectl -n ${BENCH_NS_ELASTICSEARCH} apply -f - || true'"
         sleep: 1
-      - command: "/bin/sh -c 'kubectl -n elasticsearch scale sts/{{params.transform_cluster_prefix}} --replicas=1 || true'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_ELASTICSEARCH} scale sts/{{params.transform_cluster_prefix}} --replicas=1 || true'"
         sleep: 1
-      - command: "/bin/sh -c 'kubectl -n elasticsearch wait --for=condition=ready pod -l app={{params.transform_cluster_prefix}} --timeout=180s || true'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_ELASTICSEARCH} wait --for=condition=ready pod -l app={{params.transform_cluster_prefix}} --timeout=180s || true'"
         sleep: 1
-      - command: "/bin/sh -c 'kubectl -n elasticsearch wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=180s || true'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_ELASTICSEARCH} wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=180s || true'"
         sleep: 1
       - command: |
           /bin/sh -c '
-          pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+          pw=$(kubectl -n ${BENCH_NS_ELASTICSEARCH} get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
           # C4: probe both schemes each attempt — an inherited TLS cluster only
           # answers https; a hardcoded http:// would dead-loop here.
           for i in $(seq 1 30); do
             for S in https http; do
-              kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "$S://{{params.http_service_name}}.elasticsearch.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s" | grep -q status && exit 0
+              kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "$S://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s" | grep -q status && exit 0
             done
             sleep 2
           done
@@ -196,11 +198,11 @@ preconditionUnits:
       # an exact-3 baseline regardless of how many times the fixture replants.
       - command: |
           /bin/sh -c '
-          pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+          pw=$(kubectl -n ${BENCH_NS_ELASTICSEARCH} get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
           # C4: detect the live scheme (an inherited TLS cluster only answers https).
-          S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "https://{{params.http_service_name}}.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http
-          kubectl -n elasticsearch exec {{params.curl_pod_name}} -- /bin/sh -c '\''
-          cat <<EOF | curl -s -k $1 -XPOST "$2://{{params.http_service_name}}.elasticsearch.svc:9200/_bulk?refresh=true" -H "Content-Type: application/x-ndjson" --data-binary @-
+          S=https; kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "https://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/" >/dev/null 2>&1 || S=http
+          kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- env BENCH_NS_ELASTICSEARCH="${BENCH_NS_ELASTICSEARCH}" /bin/sh -c '\''
+          cat <<EOF | curl -s -k $1 -XPOST "$2://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/_bulk?refresh=true" -H "Content-Type: application/x-ndjson" --data-binary @-
           {"index":{"_index":"{{params.source_index_name}}","_id":"seed-1"}}
           {"service":"api","@timestamp":"2026-01-01T00:00:00Z"}
           {"index":{"_index":"{{params.source_index_name}}","_id":"seed-2"}}
@@ -214,50 +216,50 @@ preconditionUnits:
       # (Re)create + start the transform (PUT is idempotent for an absent id).
       - command: |
           /bin/sh -c '
-          pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+          pw=$(kubectl -n ${BENCH_NS_ELASTICSEARCH} get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
           # C4: detect the live scheme (an inherited TLS cluster only answers https).
-          S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "https://{{params.http_service_name}}.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http
-          kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A -XPUT "$S://{{params.http_service_name}}.elasticsearch.svc:9200/_transform/{{params.transform_id}}" -H "Content-Type: application/json" -d "{\"source\":{\"index\":\"{{params.source_index_name}}\"},\"dest\":{\"index\":\"{{params.dest_index_name}}\"},\"pivot\":{\"group_by\":{\"service\":{\"terms\":{\"field\":\"service.keyword\"}}},\"aggregations\":{\"event_count\":{\"value_count\":{\"field\":\"service.keyword\"}}}},\"sync\":{\"time\":{\"field\":\"@timestamp\",\"delay\":\"1s\"}}}" || true
+          S=https; kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "https://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/" >/dev/null 2>&1 || S=http
+          kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -sk $A -XPUT "$S://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/_transform/{{params.transform_id}}" -H "Content-Type: application/json" -d "{\"source\":{\"index\":\"{{params.source_index_name}}\"},\"dest\":{\"index\":\"{{params.dest_index_name}}\"},\"pivot\":{\"group_by\":{\"service\":{\"terms\":{\"field\":\"service.keyword\"}}},\"aggregations\":{\"event_count\":{\"value_count\":{\"field\":\"service.keyword\"}}}},\"sync\":{\"time\":{\"field\":\"@timestamp\",\"delay\":\"1s\"}}}" || true
           '
         sleep: 1
       - command: |
           /bin/sh -c '
-          pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+          pw=$(kubectl -n ${BENCH_NS_ELASTICSEARCH} get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
           # C4: detect the live scheme (an inherited TLS cluster only answers https).
-          S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "https://{{params.http_service_name}}.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http
-          kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A -XPOST "$S://{{params.http_service_name}}.elasticsearch.svc:9200/_transform/{{params.transform_id}}/_start" || true
+          S=https; kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "https://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/" >/dev/null 2>&1 || S=http
+          kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -sk $A -XPOST "$S://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/_transform/{{params.transform_id}}/_start" || true
           '
         sleep: 1
       # Poll until checkpoint>=1, then capture the baseline ConfigMap.
       - command: |
           /bin/sh -c '
-          pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+          pw=$(kubectl -n ${BENCH_NS_ELASTICSEARCH} get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
           # C4: detect the live scheme (an inherited TLS cluster only answers https).
-          S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "https://{{params.http_service_name}}.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http
+          S=https; kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "https://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/" >/dev/null 2>&1 || S=http
           for i in $(seq 1 30); do
-            checkpoint=$(kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "$S://{{params.http_service_name}}.elasticsearch.svc:9200/_transform/{{params.transform_id}}/_stats" 2>/dev/null | python3 -c "import json,sys; data=json.load(sys.stdin); t=data.get(\"transforms\",[]); print(t[0].get(\"checkpointing\",{}).get(\"last\",{}).get(\"checkpoint\",0) if t else 0)" 2>/dev/null || echo 0)
+            checkpoint=$(kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "$S://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/_transform/{{params.transform_id}}/_stats" 2>/dev/null | python3 -c "import json,sys; data=json.load(sys.stdin); t=data.get(\"transforms\",[]); print(t[0].get(\"checkpointing\",{}).get(\"last\",{}).get(\"checkpoint\",0) if t else 0)" 2>/dev/null || echo 0)
             if [ "${checkpoint}" -ge 1 ]; then
-              kubectl -n elasticsearch create configmap {{params.checkpoint_configmap}} --from-literal=checkpoint_before="${checkpoint}" --dry-run=client -o yaml | kubectl apply -f -
+              kubectl -n ${BENCH_NS_ELASTICSEARCH} create configmap {{params.checkpoint_configmap}} --from-literal=checkpoint_before="${checkpoint}" --dry-run=client -o yaml | kubectl apply -f -
               exit 0
             fi
             sleep 2
           done
-          kubectl -n elasticsearch create configmap {{params.checkpoint_configmap}} --from-literal=checkpoint_before="0" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n ${BENCH_NS_ELASTICSEARCH} create configmap {{params.checkpoint_configmap}} --from-literal=checkpoint_before="0" --dry-run=client -o yaml | kubectl apply -f -
           exit 0
           '
         sleep: 1
       # Re-inject the capacity fault exactly as es_env_ready does.
-      - command: "/bin/sh -c 'kubectl -n elasticsearch scale sts/{{params.transform_cluster_prefix}} --replicas=0 || true'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_ELASTICSEARCH} scale sts/{{params.transform_cluster_prefix}} --replicas=0 || true'"
         sleep: 1
-      - command: "/bin/sh -c 'kubectl -n elasticsearch wait --for=delete pod -l app={{params.transform_cluster_prefix}} --timeout=300s || true'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_ELASTICSEARCH} wait --for=delete pod -l app={{params.transform_cluster_prefix}} --timeout=300s || true'"
         sleep: 1
       - command: |
           /bin/sh -c '
-          pw=$(kubectl -n elasticsearch get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
+          pw=$(kubectl -n ${BENCH_NS_ELASTICSEARCH} get secret elastic-password -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null); A=""; [ -n "$pw" ] && A="-u elastic:$pw"
           # C4: detect the live scheme (an inherited TLS cluster only answers https).
-          S=https; kubectl -n elasticsearch exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "https://{{params.http_service_name}}.elasticsearch.svc:9200/" >/dev/null 2>&1 || S=http
-          kubectl -n elasticsearch exec {{params.curl_pod_name}} -- /bin/sh -c '\''
-          cat <<EOF | curl -s -k $1 -XPOST "$2://{{params.http_service_name}}.elasticsearch.svc:9200/_bulk?refresh=true" -H "Content-Type: application/x-ndjson" --data-binary @-
+          S=https; kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 "https://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/" >/dev/null 2>&1 || S=http
+          kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- env BENCH_NS_ELASTICSEARCH="${BENCH_NS_ELASTICSEARCH}" /bin/sh -c '\''
+          cat <<EOF | curl -s -k $1 -XPOST "$2://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/_bulk?refresh=true" -H "Content-Type: application/x-ndjson" --data-binary @-
           {"index":{"_index":"{{params.source_index_name}}","_id":"seed-new-1"}}
           {"service":"api","@timestamp":"2026-01-02T00:00:00Z"}
           {"index":{"_index":"{{params.source_index_name}}","_id":"seed-new-2"}}

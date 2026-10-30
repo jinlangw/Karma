@@ -10,7 +10,7 @@
 # never a precondition ERROR. Always overwrites the baseline ConfigMap so a
 # stage composed mid-workflow snapshots the state inherited at ITS start
 # (O5), not a stale recording from an earlier stage.
-NS=spark-pi
+NS=${BENCH_NS_SPARK_PI:-spark-pi}
 CM=readonly-audit-baseline
 m_reps=$(kubectl -n "$NS" get deploy spark-master -o jsonpath='{.spec.replicas}' 2>/dev/null)
 w_reps=$(kubectl -n "$NS" get deploy spark-worker -o jsonpath='{.spec.replicas}' 2>/dev/null)

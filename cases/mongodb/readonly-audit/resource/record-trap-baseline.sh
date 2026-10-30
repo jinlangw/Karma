@@ -10,7 +10,7 @@
 # precondition ERROR. Always overwrites the baseline ConfigMap so a stage
 # composed mid-workflow snapshots the state inherited at ITS start (O5), not
 # a stale recording from an earlier stage.
-NS=mongodb
+NS="${BENCH_NS_MONGODB:-mongodb}"
 CM=readonly-audit-baseline
 conf=$(kubectl -n "$NS" get configmap mongod-config -o jsonpath='{.data.mongod\.conf}' 2>/dev/null)
 sha=""

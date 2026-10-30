@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: file-realm-gen
-  namespace: elasticsearch
+  namespace: ${BENCH_NS_ELASTICSEARCH}
 spec:
   containers:
     - name: file-realm-gen

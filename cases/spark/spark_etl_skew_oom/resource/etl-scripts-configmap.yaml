@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: etl-scripts
-  namespace: spark-etl
+  namespace: ${BENCH_NS_SPARK_ETL}
 data:
   etl_pipeline.sql: |
     -- Stage 1: load raw event/user/product data

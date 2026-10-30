@@ -8,8 +8,8 @@ prompt: |
 
   Recommended commands:
   ```bash
-  kubectl -n ray scale deploy/ray-worker --replicas={{params.target_worker_replicas}}
-  kubectl -n ray rollout status deploy/ray-worker --timeout=120s
+  kubectl -n ${BENCH_NS_RAY} scale deploy/ray-worker --replicas={{params.target_worker_replicas}}
+  kubectl -n ${BENCH_NS_RAY} rollout status deploy/ray-worker --timeout=120s
   ```
 
   Success criteria: ray-worker shows {{params.target_worker_replicas}} ready replicas and the Ray cluster
@@ -24,7 +24,8 @@ params:
     description: Desired number of Ray worker replicas after scaling
 
 namespace_contract:
-  required_roles: []
+  required_roles:
+    - ray
 
 metrics:
   - time_to_first_mutation
@@ -33,35 +34,35 @@ preconditionUnits:
   - name: ray_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n ray get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_RAY} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
     apply:
-      - command: "/bin/sh -c 'kubectl delete namespace ray --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/ray --timeout=300s 2>/dev/null || true'"
+      - command: "/bin/sh -c 'kubectl delete namespace ${BENCH_NS_RAY} --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/${BENCH_NS_RAY} --timeout=300s 2>/dev/null || true'"
         timeout_sec: 360
         sleep: 2
-      - command: "kubectl create namespace ray"
+      - command: "kubectl create namespace ${BENCH_NS_RAY}"
         sleep: 0
-      - command: "kubectl -n ray apply -f cases/ray/scale_workers/resource/ray-head-service.yaml"
+      - command: "kubectl -n ${BENCH_NS_RAY} apply -f cases/ray/scale_workers/resource/ray-head-service.yaml"
         sleep: 1
-      - command: "kubectl -n ray apply -f cases/ray/scale_workers/resource/ray-head.yaml"
+      - command: "kubectl -n ${BENCH_NS_RAY} apply -f cases/ray/scale_workers/resource/ray-head.yaml"
         sleep: 2
-      - command: "kubectl -n ray rollout status deploy/ray-head --timeout=600s"
+      - command: "kubectl -n ${BENCH_NS_RAY} rollout status deploy/ray-head --timeout=600s"
         sleep: 2
-      - command: "kubectl -n ray apply -f cases/ray/scale_workers/resource/ray-worker.yaml"
+      - command: "kubectl -n ${BENCH_NS_RAY} apply -f cases/ray/scale_workers/resource/ray-worker.yaml"
         sleep: 2
-      - command: "kubectl -n ray rollout status deploy/ray-worker --timeout=600s"
+      - command: "kubectl -n ${BENCH_NS_RAY} rollout status deploy/ray-worker --timeout=600s"
         sleep: 2
-      - command: "/bin/sh -c 'kubectl -n ray get pod ray-client >/dev/null 2>&1 || kubectl -n ray apply -f cases/ray/scale_workers/resource/ray-client.yaml'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_RAY} get pod ray-client >/dev/null 2>&1 || kubectl -n ${BENCH_NS_RAY} apply -f cases/ray/scale_workers/resource/ray-client.yaml'"
         sleep: 1
-      - command: "kubectl -n ray wait --for=condition=Ready pod/ray-client --timeout=600s"
+      - command: "kubectl -n ${BENCH_NS_RAY} wait --for=condition=Ready pod/ray-client --timeout=600s"
         timeout_sec: 660
         sleep: 1
       # P7: the client's GCS registration is race-prone and nothing the oracle
       # depends on — never let it abort the whole precondition.
-      - command: "kubectl -n ray exec ray-client -- ray start --address=ray-head:6379 || true"
+      - command: "kubectl -n ${BENCH_NS_RAY} exec ray-client -- ray start --address=ray-head:6379 || true"
         sleep: 2
     verify:
-      - command: "kubectl -n ray get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_RAY} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
 oracle:

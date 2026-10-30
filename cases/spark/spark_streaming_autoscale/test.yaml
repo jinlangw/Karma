@@ -18,7 +18,7 @@ prompt: |
 
   1. MONITOR traffic-generator logs continuously:
      ```bash
-     kubectl logs -n spark-streaming -l app=traffic-generator -f
+     kubectl logs -n ${BENCH_NS_SPARK_STREAMING} -l app=traffic-generator -f
      ```
      Watch for PHASE transitions and LAG/LATENCY values.
 
@@ -26,22 +26,22 @@ prompt: |
 
      When you see "PHASE 2" with high LAG (>10K):
      ```bash
-     kubectl scale deployment spark-worker -n spark-streaming --replicas=10
+     kubectl scale deployment spark-worker -n ${BENCH_NS_SPARK_STREAMING} --replicas=10
      ```
 
      When you see "PHASE 3" with critical LAG (>50K):
      ```bash
-     kubectl scale deployment spark-worker -n spark-streaming --replicas=20
+     kubectl scale deployment spark-worker -n ${BENCH_NS_SPARK_STREAMING} --replicas=20
      ```
 
      When you see "PHASE 4" (cooldown):
      ```bash
-     kubectl scale deployment spark-worker -n spark-streaming --replicas=5
+     kubectl scale deployment spark-worker -n ${BENCH_NS_SPARK_STREAMING} --replicas=5
      ```
 
   3. VERIFY scaling events are logged:
      ```bash
-     kubectl logs -n spark-streaming -l app=metrics-server --tail=50
+     kubectl logs -n ${BENCH_NS_SPARK_STREAMING} -l app=metrics-server --tail=50
      ```
      Look for "SCALING EVENT" messages.
 
@@ -53,23 +53,24 @@ prompt: |
   Monitoring Commands:
   ```bash
   # Check all pods
-  kubectl get pods -n spark-streaming
+  kubectl get pods -n ${BENCH_NS_SPARK_STREAMING}
 
   # Check deployments
-  kubectl get deployments -n spark-streaming
+  kubectl get deployments -n ${BENCH_NS_SPARK_STREAMING}
 
   # Check current worker count
-  kubectl get deployment spark-worker -n spark-streaming -o jsonpath='{.spec.replicas}'
+  kubectl get deployment spark-worker -n ${BENCH_NS_SPARK_STREAMING} -o jsonpath='{.spec.replicas}'
 
   # Watch metrics-server for scaling events
-  kubectl logs -n spark-streaming -l app=metrics-server --tail=50
+  kubectl logs -n ${BENCH_NS_SPARK_STREAMING} -l app=metrics-server --tail=50
 
   # Watch traffic generator for phase changes
-  kubectl logs -n spark-streaming -l app=traffic-generator --tail=50
+  kubectl logs -n ${BENCH_NS_SPARK_STREAMING} -l app=traffic-generator --tail=50
   ```
 
 namespace_contract:
-  required_roles: []
+  required_roles:
+    - spark_streaming
 
 metrics:
   - time_to_first_mutation
@@ -84,27 +85,27 @@ preconditionUnits:
   - name: spark_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n spark-streaming get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_SPARK_STREAMING} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
     apply:
-      - command: "kubectl delete namespace spark-streaming --ignore-not-found=true --wait=false"
+      - command: "kubectl delete namespace ${BENCH_NS_SPARK_STREAMING} --ignore-not-found=true --wait=false"
         sleep: 1
-      - command: "/bin/sh -c 'kubectl wait --for=delete namespace/spark-streaming --timeout=300s 2>/dev/null || true'"
+      - command: "/bin/sh -c 'kubectl wait --for=delete namespace/${BENCH_NS_SPARK_STREAMING} --timeout=300s 2>/dev/null || true'"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_streaming_autoscale/resource/namespace.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_STREAMING' < cases/spark/spark_streaming_autoscale/resource/namespace.yaml | kubectl apply -f -"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_streaming_autoscale/resource/rbac.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_STREAMING' < cases/spark/spark_streaming_autoscale/resource/rbac.yaml | kubectl apply -f -"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_streaming_autoscale/resource/spark-cluster.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_STREAMING' < cases/spark/spark_streaming_autoscale/resource/spark-cluster.yaml | kubectl apply -f -"
         sleep: 15
-      - command: "kubectl apply -f cases/spark/spark_streaming_autoscale/resource/traffic-generator.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_STREAMING' < cases/spark/spark_streaming_autoscale/resource/traffic-generator.yaml | kubectl apply -f -"
         sleep: 3
     verify:
-      - command: "kubectl -n spark-streaming rollout status deployment/spark-master --timeout=180s"
+      - command: "kubectl -n ${BENCH_NS_SPARK_STREAMING} rollout status deployment/spark-master --timeout=180s"
         timeout_sec: 200
-      - command: "kubectl -n spark-streaming rollout status deployment/spark-worker --timeout=180s"
+      - command: "kubectl -n ${BENCH_NS_SPARK_STREAMING} rollout status deployment/spark-worker --timeout=180s"
         timeout_sec: 200
-      - command: "kubectl -n spark-streaming get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_SPARK_STREAMING} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
 oracle:

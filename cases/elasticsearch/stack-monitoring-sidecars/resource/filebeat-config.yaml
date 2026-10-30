@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: filebeat-config
-  namespace: elasticsearch
+  namespace: ${BENCH_NS_ELASTICSEARCH}
 data:
   filebeat.yml: |
     filebeat.inputs:
@@ -12,7 +12,7 @@ data:
           - /var/log/es/*.log
 
     output.elasticsearch:
-      hosts: ["http://monitoring-es-http.monitoring.svc:9200"]
+      hosts: ["http://monitoring-es-http.${BENCH_NS_MONITORING}.svc:9200"]
 
     logging.to_files: false
     logging.to_syslog: false

@@ -19,6 +19,7 @@ COMMON = Path(__file__).resolve().parents[2] / "common"
 sys.path.insert(0, str(COMMON))
 
 from oracle_lib import (  # noqa: E402
+    bench_ns,
     deployment_env,
     deployment_pvc_claim,
     deployment_ready_replicas,
@@ -31,9 +32,9 @@ DEPLOYMENT_NAME = os.environ.get("BENCH_PARAM_DEPLOYMENT_NAME", "spark-history-s
 PVC_NAME = os.environ.get("BENCH_PARAM_PVC_NAME", "spark-history-pvc")
 LOG_DIR = os.environ.get("BENCH_PARAM_LOG_DIR", "/mnt/spark-logs")
 
-TEAM_A_NS = "spark-team-a"
-TEAM_B_NS = "spark-team-b"
-HISTORY_NS = "spark-history"
+TEAM_A_NS = bench_ns("spark_team_a", "spark-team-a")
+TEAM_B_NS = bench_ns("spark_team_b", "spark-team-b")
+HISTORY_NS = bench_ns("spark_history", "spark-history")
 
 TENANTS = (
     (TEAM_A_NS, "spark-pi-team-a"),

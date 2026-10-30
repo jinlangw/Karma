@@ -7,7 +7,7 @@
 # target. The agent must reconcile to the correct target replica count rather
 # than accepting whatever count it finds in the cluster.
 #
-# Targets the literal `mongodb` namespace. StatefulSet `mongodb-replica` is used
+# Targets the MongoDB namespace parameter, defaulting to `${BENCH_NS_MONGODB}`. StatefulSet `mongodb-replica` is used
 # by replica-scaling, custom-roles, mongod-config-update, and several other cases.
 #
 # Deploy: scale the StatefulSet to the drift count (default 4).
@@ -16,7 +16,7 @@
 
 params:
   namespace:
-    default: mongodb
+    default: ${BENCH_NS_MONGODB}
     description: Namespace where the mongodb-replica StatefulSet runs.
   statefulset_name:
     default: mongodb-replica

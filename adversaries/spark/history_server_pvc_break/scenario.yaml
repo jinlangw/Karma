@@ -1,6 +1,6 @@
 # spark/adversarial/history_server_pvc_break
 #
-# Patches the spark-history-server Deployment in the spark-history namespace so
+# Patches the spark-history-server Deployment in the namespace selected by
 # that its PVC volume reference points to the non-existent claim
 # "spark-history-pvc-broken", causing the pod to stall in Pending state (volume
 # mount failure). This simulates an operator accidentally rolling out a bad
@@ -8,14 +8,14 @@
 # agent must identify the bad claimName in the Deployment spec and fix it to
 # "spark-history-pvc" so the History Server can mount its log volume and start.
 #
-# Targets the literal `spark-history` namespace used by spark_multi_tenant.
+# Targets the namespace bound to the spark_history role used by spark_multi_tenant.
 #
 # Deploy: patch the Deployment's PVC claimName to a non-existent value.
 # Lift:   if the agent has not already fixed the Deployment, restore the correct claimName.
 
 params:
   namespace:
-    default: spark-history
+    default: ${BENCH_NS_SPARK_HISTORY}
     description: Namespace where the Spark History Server Deployment lives.
   deployment_name:
     default: spark-history-server

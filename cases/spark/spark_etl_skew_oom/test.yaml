@@ -26,13 +26,13 @@ prompt: |
 
      ```bash
      # Check ETL job status
-     kubectl get job etl-job -n spark-etl
+     kubectl get job etl-job -n ${BENCH_NS_SPARK_ETL}
 
      # Get job pod logs
-     kubectl logs -n spark-etl -l app=etl-job --tail=100
+     kubectl logs -n ${BENCH_NS_SPARK_ETL} -l app=etl-job --tail=100
 
      # Check for failed pods
-     kubectl get pods -n spark-etl
+     kubectl get pods -n ${BENCH_NS_SPARK_ETL}
      ```
 
   2. DIAGNOSE ROOT CAUSE
@@ -42,10 +42,10 @@ prompt: |
 
      ```bash
      # Check data skew info
-     kubectl exec -n spark-etl -l app=data-generator -- cat {{params.data_mount}}/skew_info.txt
+     kubectl exec -n ${BENCH_NS_SPARK_ETL} -l app=data-generator -- cat {{params.data_mount}}/skew_info.txt
 
      # Check diagnostic server logs
-     kubectl logs -n spark-etl -l app=diagnostic-server --tail=50
+     kubectl logs -n ${BENCH_NS_SPARK_ETL} -l app=diagnostic-server --tail=50
      ```
 
      Expected finding: user_id 999 has ~50% of all records (skew ratio > 10x)
@@ -55,22 +55,22 @@ prompt: |
      raise the job's memory:
      ```bash
      # Delete failed job
-     kubectl delete job etl-job -n spark-etl
+     kubectl delete job etl-job -n ${BENCH_NS_SPARK_ETL}
 
      # Create a new job with increased memory (edit and apply):
      # raise the 256m memory settings to 1g — both --driver-memory and
      # spark.executor.memory (in local[2] mode the executor runs inside the
      # driver JVM) — in etl-job.yaml
-     kubectl apply -f cases/spark/spark_etl_skew_oom/resource/etl-job.yaml
+     envsubst '$BENCH_NS_SPARK_ETL' < cases/spark/spark_etl_skew_oom/resource/etl-job.yaml | kubectl apply -f -
      ```
 
      Optionally, for the underlying data skew you may ALSO scale/upsize the
      workers or enable AQE skew handling on the job:
      ```bash
      # Scale workers for more parallelism
-     kubectl scale deployment spark-worker -n spark-etl --replicas=4
-     kubectl set env deployment/spark-worker -n spark-etl SPARK_WORKER_MEMORY=2G
-     kubectl rollout status deployment/spark-worker -n spark-etl
+     kubectl scale deployment spark-worker -n ${BENCH_NS_SPARK_ETL} --replicas=4
+     kubectl set env deployment/spark-worker -n ${BENCH_NS_SPARK_ETL} SPARK_WORKER_MEMORY=2G
+     kubectl rollout status deployment/spark-worker -n ${BENCH_NS_SPARK_ETL}
 
      # And/or add AQE config to the job:
      # --conf spark.sql.adaptive.enabled=true
@@ -81,19 +81,19 @@ prompt: |
      After applying the fix:
      ```bash
      # Re-apply the ETL job
-     kubectl apply -f cases/spark/spark_etl_skew_oom/resource/etl-job.yaml
+     envsubst '$BENCH_NS_SPARK_ETL' < cases/spark/spark_etl_skew_oom/resource/etl-job.yaml | kubectl apply -f -
 
      # Watch job status
-     kubectl get job etl-job -n spark-etl -w
+     kubectl get job etl-job -n ${BENCH_NS_SPARK_ETL} -w
      ```
 
   5. VERIFY SUCCESS
      ```bash
      # Check job completed
-     kubectl get job etl-job -n spark-etl
+     kubectl get job etl-job -n ${BENCH_NS_SPARK_ETL}
 
      # Check job logs
-     kubectl logs -n spark-etl -l app=etl-job --tail=50
+     kubectl logs -n ${BENCH_NS_SPARK_ETL} -l app=etl-job --tail=50
      ```
 
   SUCCESS CRITERIA:
@@ -109,7 +109,8 @@ params:
     description: Mount path where the ETL input data is staged
 
 namespace_contract:
-  required_roles: []
+  required_roles:
+    - spark_etl
 
 metrics:
   - time_to_first_mutation
@@ -124,29 +125,29 @@ preconditionUnits:
   - name: spark_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n spark-etl get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_SPARK_ETL} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
     apply:
-      - command: "kubectl delete namespace spark-etl --ignore-not-found=true --wait=false"
+      - command: "kubectl delete namespace ${BENCH_NS_SPARK_ETL} --ignore-not-found=true --wait=false"
         sleep: 1
-      - command: "/bin/sh -c 'kubectl wait --for=delete namespace/spark-etl --timeout=300s 2>/dev/null || true'"
+      - command: "/bin/sh -c 'kubectl wait --for=delete namespace/${BENCH_NS_SPARK_ETL} --timeout=300s 2>/dev/null || true'"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_etl_skew_oom/resource/namespace.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_ETL' < cases/spark/spark_etl_skew_oom/resource/namespace.yaml | kubectl apply -f -"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_etl_skew_oom/resource/rbac.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_ETL' < cases/spark/spark_etl_skew_oom/resource/rbac.yaml | kubectl apply -f -"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_etl_skew_oom/resource/data-generator.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_ETL' < cases/spark/spark_etl_skew_oom/resource/data-generator.yaml | kubectl apply -f -"
         sleep: 30
-      - command: "kubectl apply -f cases/spark/spark_etl_skew_oom/resource/etl-scripts-configmap.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_ETL' < cases/spark/spark_etl_skew_oom/resource/etl-scripts-configmap.yaml | kubectl apply -f -"
         sleep: 1
-      - command: "kubectl apply -f cases/spark/spark_etl_skew_oom/resource/spark-cluster.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_ETL' < cases/spark/spark_etl_skew_oom/resource/spark-cluster.yaml | kubectl apply -f -"
         sleep: 15
-      - command: "kubectl apply -f cases/spark/spark_etl_skew_oom/resource/diagnostic-tools.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_ETL' < cases/spark/spark_etl_skew_oom/resource/diagnostic-tools.yaml | kubectl apply -f -"
         sleep: 3
-      - command: "kubectl apply -f cases/spark/spark_etl_skew_oom/resource/etl-job.yaml"
+      - command: "envsubst '$BENCH_NS_SPARK_ETL' < cases/spark/spark_etl_skew_oom/resource/etl-job.yaml | kubectl apply -f -"
         sleep: 5
     verify:
-      - command: "kubectl -n spark-etl get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_SPARK_ETL} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
 oracle:

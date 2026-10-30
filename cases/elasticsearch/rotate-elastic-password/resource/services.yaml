@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: es-cluster
-  namespace: elasticsearch
+  namespace: ${BENCH_NS_ELASTICSEARCH}
   labels:
     app: es-cluster
 spec:
@@ -18,7 +18,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: es-http
-  namespace: elasticsearch
+  namespace: ${BENCH_NS_ELASTICSEARCH}
   labels:
     app: es-cluster
 spec:

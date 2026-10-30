@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: metricbeat-config
-  namespace: elasticsearch
+  namespace: ${BENCH_NS_ELASTICSEARCH}
 data:
   metricbeat.yml: |
     metricbeat.modules:
@@ -15,7 +15,7 @@ data:
         ssl.certificate_authorities: ["/etc/es-http/ca.crt"]
 
     output.elasticsearch:
-      hosts: ["http://monitoring-es-http.monitoring.svc:9200"]
+      hosts: ["http://monitoring-es-http.${BENCH_NS_MONITORING}.svc:9200"]
 
     logging.to_files: false
     logging.to_syslog: false

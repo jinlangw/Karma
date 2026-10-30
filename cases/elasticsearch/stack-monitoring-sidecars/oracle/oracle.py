@@ -4,8 +4,8 @@ import os
 import subprocess
 import sys
 
-MON_NS = "monitoring"
-ES_NS = "elasticsearch"
+MON_NS = os.environ.get("BENCH_NS_MONITORING", "monitoring")
+ES_NS = os.environ.get("BENCH_NS_ELASTICSEARCH", os.environ.get("BENCH_NAMESPACE", "elasticsearch"))
 MON_SERVICE = "monitoring-es-http"
 MON_CURL = "monitoring-curl-test"
 # Hint for the Elasticsearch pod app label. Used as an override when it matches a

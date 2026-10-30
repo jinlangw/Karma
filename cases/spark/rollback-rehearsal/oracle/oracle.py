@@ -19,9 +19,9 @@ from pathlib import Path
 COMMON = Path(__file__).resolve().parents[2] / "common"
 sys.path.insert(0, str(COMMON))
 
-from oracle_lib import check_trap_baseline, run  # noqa: E402
+from oracle_lib import bench_namespace, check_trap_baseline, run  # noqa: E402
 
-NAMESPACE = "spark-pi"
+NAMESPACE = bench_namespace("spark-pi")
 CONFIGMAP = "rollback-rehearsal"
 KEY = "rollback.sh"
 BASELINE_CM = "rollback-rehearsal-baseline"

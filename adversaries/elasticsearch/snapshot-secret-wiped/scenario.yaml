@@ -10,7 +10,7 @@
 
 params:
   namespace:
-    default: elasticsearch
+    default: ${BENCH_NS_ELASTICSEARCH}
     description: Namespace the Elasticsearch cluster and MinIO run in.
   secret_name:
     default: es-secure-settings

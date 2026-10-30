@@ -1,20 +1,20 @@
 # spark/adversarial/rbac_role_revoke
 #
-# Deletes the spark Role (spark-pi-role) from the spark-pi namespace while the
+# Deletes the spark Role (spark-pi-role) from the namespace selected by
 # agent is working. Without the Role the RoleBinding becomes dangling — the
 # ServiceAccount spark-pi loses all privileges, so any subsequent spark-submit
 # that creates executor pods or ConfigMaps fails with a 403 Forbidden. The agent
 # must notice the missing RBAC object and recreate or repair it so the driver can
 # successfully launch executors and complete the job.
 #
-# Targets the literal `spark-pi` namespace used by deploy_spark_pi.
+# Targets the namespace bound to the spark_pi role used by deploy_spark_pi.
 #
 # Deploy: delete the spark-pi-role Role.
 # Lift:   if the agent has not already recreated the Role, restore it.
 
 params:
   namespace:
-    default: spark-pi
+    default: ${BENCH_NS_SPARK_PI}
     description: Namespace the SparkPi job runs in.
   role_name:
     default: spark-pi-role

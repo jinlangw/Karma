@@ -4,9 +4,10 @@ import os
 import subprocess
 import sys
 
-NAMESPACE = "elasticsearch"
+NAMESPACE = os.environ.get("BENCH_NAMESPACE", "elasticsearch")
 ES_SERVICE = "es-http"
-INGRESS_SERVICE = "ingress-nginx-controller.ingress-nginx.svc"
+INGRESS_NAMESPACE = os.environ.get("BENCH_PARAM_INGRESS_NAMESPACE", "ingress-nginx")
+INGRESS_SERVICE = f"ingress-nginx-controller.{INGRESS_NAMESPACE}.svc"
 INGRESS_HOST = "es.example.com"
 # ES 8.x runs with security enabled, so the backend HTTP API requires
 # authenticating as the elastic superuser. When this case inherits a secured

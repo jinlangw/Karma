@@ -13,7 +13,7 @@ prompt: |
 
   Use this command to test:
   ```bash
-  kubectl -n ray exec curl-test -- curl -sS -o /dev/null -w "%{http_code}" \
+  kubectl -n ${BENCH_NS_RAY} exec curl-test -- curl -sS -o /dev/null -w "%{http_code}" \
     http://ray-head:{{params.dashboard_port}}/api/cluster_status
   ```
 
@@ -25,7 +25,8 @@ params:
     description: Port on the ray-head Service that exposes the Ray dashboard
 
 namespace_contract:
-  required_roles: []
+  required_roles:
+    - ray
 
 metrics:
   - time_to_first_mutation
@@ -34,31 +35,31 @@ preconditionUnits:
   - name: ray_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n ray get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_RAY} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
     apply:
-      - command: "/bin/sh -c 'kubectl delete namespace ray --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/ray --timeout=300s 2>/dev/null || true'"
+      - command: "/bin/sh -c 'kubectl delete namespace ${BENCH_NS_RAY} --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/${BENCH_NS_RAY} --timeout=300s 2>/dev/null || true'"
         timeout_sec: 360
         sleep: 2
-      - command: "kubectl create namespace ray"
+      - command: "kubectl create namespace ${BENCH_NS_RAY}"
         sleep: 0
-      - command: "kubectl -n ray apply -f cases/ray/dashboard_exposure/resource/ray-head-service.yaml"
+      - command: "envsubst '$BENCH_NS_RAY' < cases/ray/dashboard_exposure/resource/ray-head-service.yaml | kubectl -n ${BENCH_NS_RAY} apply -f -"
         sleep: 1
-      - command: "kubectl -n ray apply -f cases/ray/dashboard_exposure/resource/ray-head.yaml"
+      - command: "kubectl -n ${BENCH_NS_RAY} apply -f cases/ray/dashboard_exposure/resource/ray-head.yaml"
         sleep: 2
-      - command: "kubectl -n ray rollout status deploy/ray-head --timeout=600s"
+      - command: "kubectl -n ${BENCH_NS_RAY} rollout status deploy/ray-head --timeout=600s"
         sleep: 2
-      - command: "kubectl -n ray apply -f cases/ray/dashboard_exposure/resource/ray-worker.yaml"
+      - command: "kubectl -n ${BENCH_NS_RAY} apply -f cases/ray/dashboard_exposure/resource/ray-worker.yaml"
         sleep: 2
-      - command: "kubectl -n ray rollout status deploy/ray-worker --timeout=600s"
+      - command: "kubectl -n ${BENCH_NS_RAY} rollout status deploy/ray-worker --timeout=600s"
         sleep: 2
-      - command: "/bin/sh -c 'kubectl -n ray get pod curl-test >/dev/null 2>&1 || kubectl -n ray apply -f cases/ray/dashboard_exposure/resource/curl-test.yaml'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_RAY} get pod curl-test >/dev/null 2>&1 || kubectl -n ${BENCH_NS_RAY} apply -f cases/ray/dashboard_exposure/resource/curl-test.yaml'"
         sleep: 1
-      - command: "kubectl -n ray wait --for=condition=Ready pod/curl-test --timeout=600s"
+      - command: "kubectl -n ${BENCH_NS_RAY} wait --for=condition=Ready pod/curl-test --timeout=600s"
         timeout_sec: 660
         sleep: 1
     verify:
-      - command: "kubectl -n ray get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_RAY} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
   # Additive dashboard-process fixture (C1): the oracle needs the head's
@@ -76,13 +77,13 @@ preconditionUnits:
   - name: dashboard_process_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n ray exec deploy/ray-head -- python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8265/api/cluster_status\", timeout=5)'"
+      - command: "kubectl -n ${BENCH_NS_RAY} exec deploy/ray-head -- python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8265/api/cluster_status\", timeout=5)'"
         timeout_sec: 20
     apply:
-      - command: "kubectl -n ray patch deploy ray-head --type=json --patch-file cases/ray/dashboard_exposure/resource/enable-dashboard-patch.json || true"
+      - command: "kubectl -n ${BENCH_NS_RAY} patch deploy ray-head --type=json --patch-file cases/ray/dashboard_exposure/resource/enable-dashboard-patch.json || true"
         sleep: 2
       # Bounded, best-effort wait (P13: --timeout paired with timeout_sec).
-      - command: "kubectl -n ray rollout status deploy/ray-head --timeout=240s || true"
+      - command: "kubectl -n ${BENCH_NS_RAY} rollout status deploy/ray-head --timeout=240s || true"
         timeout_sec: 300
         sleep: 2
     verify:
@@ -99,16 +100,16 @@ preconditionUnits:
   - name: curl_test_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n ray get pod curl-test 2>/dev/null | grep -c curl-test"
+      - command: "kubectl -n ${BENCH_NS_RAY} get pod curl-test 2>/dev/null | grep -c curl-test"
         timeout_sec: 10
     apply:
-      - command: "/bin/sh -c 'kubectl -n ray get pod curl-test >/dev/null 2>&1 || kubectl -n ray apply -f cases/ray/dashboard_exposure/resource/curl-test.yaml'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_RAY} get pod curl-test >/dev/null 2>&1 || kubectl -n ${BENCH_NS_RAY} apply -f cases/ray/dashboard_exposure/resource/curl-test.yaml'"
         sleep: 1
-      - command: "kubectl -n ray wait --for=condition=Ready pod/curl-test --timeout=600s"
+      - command: "kubectl -n ${BENCH_NS_RAY} wait --for=condition=Ready pod/curl-test --timeout=600s"
         timeout_sec: 660
         sleep: 1
     verify:
-      - command: "kubectl -n ray get pod curl-test 2>/dev/null | grep -c curl-test"
+      - command: "kubectl -n ${BENCH_NS_RAY} get pod curl-test 2>/dev/null | grep -c curl-test"
         timeout_sec: 10
 
 oracle:

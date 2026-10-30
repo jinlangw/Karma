@@ -13,7 +13,7 @@
 
 params:
   namespace:
-    default: ray
+    default: ${BENCH_NS_RAY}
     description: Namespace the Ray cluster runs in.
   service_name:
     default: ray-head

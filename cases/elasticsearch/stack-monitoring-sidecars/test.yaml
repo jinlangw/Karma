@@ -5,8 +5,8 @@ prompt: |
   Stack monitoring data is not showing up in the monitoring cluster.
 
   OBSERVED STATE:
-  - Elasticsearch is running in the elasticsearch namespace.
-  - Monitoring cluster is running in the monitoring namespace.
+  - Elasticsearch is running in the namespace ${BENCH_NS_ELASTICSEARCH}.
+  - Monitoring cluster is running in the namespace ${BENCH_NS_MONITORING}.
 
   YOUR TASK:
   Restore monitoring data flow so the monitoring cluster receives Elasticsearch
@@ -31,7 +31,7 @@ params:
     description: "Name of the Elasticsearch HTTP service / cert CN"
   curl_pod_name:
     default: curl-test
-    description: "Helper pod in the elasticsearch namespace for HTTP requests"
+    description: "Helper pod in the namespace ${BENCH_NS_ELASTICSEARCH} for HTTP requests"
   tls_secret_name:
     default: es-http-tls
     description: "Secret holding the Elasticsearch HTTPS TLS cert, key, and CA"
@@ -40,10 +40,12 @@ params:
     description: "Pod label / deployment of the monitoring Elasticsearch cluster"
   monitoring_curl_pod_name:
     default: monitoring-curl-test
-    description: "Helper pod in the monitoring namespace for HTTP requests"
+    description: "Helper pod in the namespace ${BENCH_NS_MONITORING} for HTTP requests"
 
 namespace_contract:
-  required_roles: []
+  required_roles:
+    - elasticsearch
+    - monitoring
 
 metrics:
   - time_to_first_mutation
@@ -57,22 +59,22 @@ preconditionUnits:
   - name: es_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_ELASTICSEARCH} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
     apply:
-      - command: "/bin/sh -c 'kubectl delete namespace elasticsearch --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/elasticsearch --timeout=400s || true'"
+      - command: "/bin/sh -c 'kubectl delete namespace ${BENCH_NS_ELASTICSEARCH} --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/${BENCH_NS_ELASTICSEARCH} --timeout=400s || true'"
         sleep: 1
-      - command: "kubectl create namespace elasticsearch"
+      - command: "kubectl create namespace ${BENCH_NS_ELASTICSEARCH}"
         sleep: 1
-      - command: "/bin/sh -c 'kubectl -n elasticsearch get pod openssl-toolbox >/dev/null 2>&1 || kubectl -n elasticsearch apply -f cases/elasticsearch/stack-monitoring-sidecars/resource/openssl-toolbox.yaml'"
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_ELASTICSEARCH} get pod openssl-toolbox >/dev/null 2>&1 || envsubst \\$BENCH_NS_ELASTICSEARCH < cases/elasticsearch/stack-monitoring-sidecars/resource/openssl-toolbox.yaml | kubectl -n ${BENCH_NS_ELASTICSEARCH} apply -f -'"
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod/openssl-toolbox --timeout=300s"
+      - command: "kubectl -n ${BENCH_NS_ELASTICSEARCH} wait --for=condition=ready pod/openssl-toolbox --timeout=300s"
         sleep: 1
       - command: |
           /bin/sh -c '
           set -e
           TMP_DIR=$(mktemp -d)
-          kubectl -n elasticsearch exec openssl-toolbox -- /bin/sh -c '\''
+          kubectl -n ${BENCH_NS_ELASTICSEARCH} exec openssl-toolbox -- env BENCH_NS_ELASTICSEARCH=${BENCH_NS_ELASTICSEARCH} /bin/sh -c '\''
           set -e
           mkdir -p /tmp/certs
           cat > /tmp/certs/openssl.cnf <<EOF
@@ -87,12 +89,12 @@ preconditionUnits:
           subjectAltName=@alt_names
           [alt_names]
           DNS.1={{params.http_service_name}}
-          DNS.2={{params.http_service_name}}.elasticsearch
-          DNS.3={{params.http_service_name}}.elasticsearch.svc
-          DNS.4={{params.http_service_name}}.elasticsearch.svc.cluster.local
-          DNS.5={{params.cluster_prefix}}-0.{{params.cluster_prefix}}.elasticsearch.svc.cluster.local
-          DNS.6={{params.cluster_prefix}}-1.{{params.cluster_prefix}}.elasticsearch.svc.cluster.local
-          DNS.7={{params.cluster_prefix}}-2.{{params.cluster_prefix}}.elasticsearch.svc.cluster.local
+          DNS.2={{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}
+          DNS.3={{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc
+          DNS.4={{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc.cluster.local
+          DNS.5={{params.cluster_prefix}}-0.{{params.cluster_prefix}}.${BENCH_NS_ELASTICSEARCH}.svc.cluster.local
+          DNS.6={{params.cluster_prefix}}-1.{{params.cluster_prefix}}.${BENCH_NS_ELASTICSEARCH}.svc.cluster.local
+          DNS.7={{params.cluster_prefix}}-2.{{params.cluster_prefix}}.${BENCH_NS_ELASTICSEARCH}.svc.cluster.local
           DNS.8=localhost
           EOF
           openssl genrsa -out /tmp/certs/ca.key 2048
@@ -101,38 +103,40 @@ preconditionUnits:
           openssl req -new -key /tmp/certs/server.key -out /tmp/certs/server.csr -config /tmp/certs/openssl.cnf
           openssl x509 -req -in /tmp/certs/server.csr -CA /tmp/certs/ca.crt -CAkey /tmp/certs/ca.key -CAcreateserial -out /tmp/certs/server.crt -days 365 -extensions v3_req -extfile /tmp/certs/openssl.cnf
           '\''
-          kubectl -n elasticsearch cp openssl-toolbox:/tmp/certs "${TMP_DIR}/certs"
-          kubectl -n elasticsearch create secret generic {{params.tls_secret_name}} --from-file=tls.crt="${TMP_DIR}/certs/server.crt" --from-file=tls.key="${TMP_DIR}/certs/server.key" --from-file=ca.crt="${TMP_DIR}/certs/ca.crt" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n ${BENCH_NS_ELASTICSEARCH} cp openssl-toolbox:/tmp/certs "${TMP_DIR}/certs"
+          kubectl -n ${BENCH_NS_ELASTICSEARCH} create secret generic {{params.tls_secret_name}} --from-file=tls.crt="${TMP_DIR}/certs/server.crt" --from-file=tls.key="${TMP_DIR}/certs/server.key" --from-file=ca.crt="${TMP_DIR}/certs/ca.crt" --dry-run=client -o yaml | kubectl apply -f -
           '
         sleep: 1
-      - command: "kubectl -n elasticsearch apply -f cases/elasticsearch/stack-monitoring-sidecars/resource/"
+      - command: >-
+          { first=1; for f in cases/elasticsearch/stack-monitoring-sidecars/resource/*.yaml; do if [ "$first" -eq 0 ]; then printf '\n---\n'; fi; first=0; envsubst '$BENCH_NS_ELASTICSEARCH $BENCH_NS_MONITORING' < "$f"; done; } | kubectl -n "$BENCH_NS_ELASTICSEARCH" apply -f -
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod -l app={{params.cluster_prefix}} --timeout=600s"
+      - command: "kubectl -n ${BENCH_NS_ELASTICSEARCH} wait --for=condition=ready pod -l app={{params.cluster_prefix}} --timeout=600s"
         sleep: 1
-      - command: "kubectl -n elasticsearch wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=300s"
+      - command: "kubectl -n ${BENCH_NS_ELASTICSEARCH} wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=300s"
         sleep: 1
     verify:
-      - command: "kubectl -n elasticsearch get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_ELASTICSEARCH} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
   - name: monitoring_env_ready
     on_probe_fail: skip
     probe:
-      - command: "kubectl -n monitoring get pods -l app={{params.monitoring_deployment_name}} 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_MONITORING} get pods -l app={{params.monitoring_deployment_name}} 2>/dev/null | grep -c Running"
         timeout_sec: 10
     apply:
-      - command: "/bin/sh -c 'kubectl delete namespace monitoring --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/monitoring --timeout=400s || true'"
+      - command: "/bin/sh -c 'kubectl delete namespace ${BENCH_NS_MONITORING} --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/${BENCH_NS_MONITORING} --timeout=400s || true'"
         sleep: 1
-      - command: "kubectl create namespace monitoring"
+      - command: "kubectl create namespace ${BENCH_NS_MONITORING}"
         sleep: 1
-      - command: "kubectl -n monitoring apply -f cases/elasticsearch/stack-monitoring-sidecars/resource/monitoring-cluster/"
+      - command: >-
+          { first=1; for f in cases/elasticsearch/stack-monitoring-sidecars/resource/monitoring-cluster/*.yaml; do if [ "$first" -eq 0 ]; then printf '\n---\n'; fi; first=0; envsubst '$BENCH_NS_MONITORING' < "$f"; done; } | kubectl -n "$BENCH_NS_MONITORING" apply -f -
         sleep: 1
-      - command: "kubectl -n monitoring wait --for=condition=ready pod -l app={{params.monitoring_deployment_name}} --timeout=300s"
+      - command: "kubectl -n ${BENCH_NS_MONITORING} wait --for=condition=ready pod -l app={{params.monitoring_deployment_name}} --timeout=300s"
         sleep: 1
-      - command: "kubectl -n monitoring wait --for=condition=ready pod/{{params.monitoring_curl_pod_name}} --timeout=300s"
+      - command: "kubectl -n ${BENCH_NS_MONITORING} wait --for=condition=ready pod/{{params.monitoring_curl_pod_name}} --timeout=300s"
         sleep: 1
     verify:
-      - command: "kubectl -n monitoring get pods 2>/dev/null | grep -c Running"
+      - command: "kubectl -n ${BENCH_NS_MONITORING} get pods 2>/dev/null | grep -c Running"
         timeout_sec: 10
 
 oracle:

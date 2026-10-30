@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: traffic-generator
-  namespace: spark-streaming
+  namespace: ${BENCH_NS_SPARK_STREAMING}
 spec:
   replicas: 1
   selector:
@@ -47,7 +47,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: metrics-server
-  namespace: spark-streaming
+  namespace: ${BENCH_NS_SPARK_STREAMING}
 spec:
   replicas: 1
   selector:
@@ -75,7 +75,7 @@ spec:
           while true; do
             # O17: bound the poll so a stalled API call can't silently freeze
             # the sampler (and miss a transition) under adversary pod-churn.
-            CUR=$(kubectl -n spark-streaming --request-timeout=5s get deployment spark-worker \
+            CUR=$(kubectl -n ${BENCH_NS_SPARK_STREAMING} --request-timeout=5s get deployment spark-worker \
               -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "?")
             if [ -n "$CUR" ] && [ "$CUR" != "?" ] && [ "$CUR" != "$PREV" ]; then
               if [ -n "$PREV" ]; then

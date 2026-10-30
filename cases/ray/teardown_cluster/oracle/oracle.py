@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Oracle for ray/teardown_cluster.
 
-Verifies the namespace still exists while the ray-head deployment, ray-worker
+Verifies the assigned namespace still exists while the ray-head deployment, ray-worker
 deployment, and ray-head Service have all been removed.
 """
 from __future__ import annotations
@@ -11,15 +11,15 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from common.oracle_lib import namespace_exists, resource_missing  # noqa: E402
+from common.oracle_lib import bench_namespace, namespace_exists, resource_missing  # noqa: E402
 
-NAMESPACE = "ray"
+NAMESPACE = bench_namespace()
 HEAD = "ray-head"
 WORKER = "ray-worker"
 
 
 def check_namespace() -> int:
-    """Confirm the ray namespace was preserved."""
+    """Confirm the assigned Ray namespace was preserved."""
     if not namespace_exists(NAMESPACE):
         print(f"namespace/{NAMESPACE} is missing")
         return 1

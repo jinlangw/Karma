@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: spark-monitor
-  namespace: spark-runtime
+  namespace: ${BENCH_NS_SPARK_RUNTIME}
   annotations:
     kubernetes.io/change-cause: "v1 - working baseline image"
 spec:

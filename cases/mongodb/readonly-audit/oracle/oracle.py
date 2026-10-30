@@ -15,11 +15,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
 
-NAMESPACE = "mongodb"
+NAMESPACE = os.environ.get("BENCH_NAMESPACE", "mongodb")
 CONFIGMAP = "config-audit"
 KEY = "findings.txt"
 BASELINE_CM = "readonly-audit-baseline"
