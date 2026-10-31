@@ -1,0 +1,166 @@
+# elasticsearch/master-downscale-voting-exclusions
+# Restore cluster availability after a master downscale left coordination settings unsafe
+
+prompt: |
+  The cluster became unavailable after a master downscale attempt.
+
+  OBSERVED STATE:
+  - Only one master-eligible node is running.
+  - Coordination may not match the current node count.
+
+  YOUR TASK:
+  Restore availability and leave the cluster safe to run as a single-node cluster.
+
+  CONSTRAINTS:
+  - Do not install CRDs or use operators.
+  - Avoid data loss.
+
+  GOAL:
+  - One master-eligible node remains.
+  - Coordination settings are safe for the current node count.
+  - Voting exclusions are cleared.
+  - Cluster health is yellow/green.
+
+  Verification:
+  1. Cluster health is yellow/green.
+  2. Exactly one master-eligible node remains.
+  3. Voting exclusions list is empty.
+  4. auto_shrink_voting_configuration is true or unset (default).
+
+params:
+  cluster_prefix:
+    default: "es-cluster"
+    description: "StatefulSet/cluster name prefix for Elasticsearch node pods"
+  http_service_name:
+    default: "es-http"
+    description: "Name of the Elasticsearch HTTP service"
+  curl_pod_name:
+    default: "curl-test"
+    description: "Helper pod used to query Elasticsearch over HTTP"
+  target_master_nodes:
+    default: 1
+    description: "Graded master/node count after the recovery (O2-exception: the count IS the outcome, so the oracle is param-first and never live-derives it)"
+namespace_contract:
+  required_roles:
+    - elasticsearch
+
+metrics:
+  - time_to_first_mutation
+  - read_write_ratio
+  - blast_radius
+  - destructive_ops
+  - decoy_integrity
+  - residual_drift
+
+preconditionUnits:
+  # P27: the injected fault is quorum loss (masters scaled 3->1, no elected
+  # master). The probe/apply/verify must NOT confirm the fault through the
+  # data plane (`/_cluster/settings`), which returns 503 master_not_discovered
+  # on a master-less cluster and can never match -> 600s setup timeout, agent
+  # never runs. Instead the unsafe setting is PROVEN by the apply's own
+  # `"acknowledged":true` PUT issued WHILE the cluster is still healthy at 3
+  # replicas (in-service proof captured BEFORE the fault), and the fault is
+  # confirmed from the CONTROL PLANE: sts/es-cluster spec.replicas == 1.
+  - name: es_env_ready
+    on_probe_fail: skip
+    # P32 skip-gate: gate the DESTRUCTIVE fresh build on workload EXISTENCE (the
+    # StatefulSet present in any state, or any pod Running), never on the fault
+    # signature (spec.replicas==1) — the old fault-shape probe made an inherited
+    # HEALTHY 3-replica cluster fail the probe, so the apply `delete namespace`d
+    # it and destroyed every prior stage's state. Re-planting the quorum fault on
+    # an inherited cluster is the additive voting_drift_ready unit's job below.
+    probe:
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_ELASTICSEARCH} get sts {{params.cluster_prefix}} >/dev/null 2>&1 || kubectl -n ${BENCH_NS_ELASTICSEARCH} get pods --field-selector=status.phase=Running -o name 2>/dev/null | grep -q .'"
+        timeout_sec: 10
+    apply:
+      - command: "/bin/sh -c 'kubectl delete namespace ${BENCH_NS_ELASTICSEARCH} --ignore-not-found=true --wait=false; kubectl wait --for=delete namespace/${BENCH_NS_ELASTICSEARCH} --timeout=400s || true'"
+        sleep: 1
+      - command: "kubectl create namespace ${BENCH_NS_ELASTICSEARCH}"
+        sleep: 1
+      - command: >-
+          { first=1; for f in cases/tests/elasticsearch/master-downscale-voting-exclusions/resource/*.yaml; do if [ "$first" -eq 0 ]; then printf '\n---\n'; fi; first=0; envsubst '$BENCH_NS_ELASTICSEARCH' < "$f"; done; } | kubectl -n "$BENCH_NS_ELASTICSEARCH" apply -f -
+        sleep: 1
+      # Bring the cluster up HEALTHY at full (3) replicas first: the unsafe
+      # setting must be written while a master exists, before quorum is broken.
+      - command: "kubectl -n ${BENCH_NS_ELASTICSEARCH} wait --for=condition=ready pod -l app={{params.cluster_prefix}} --timeout=600s"
+        sleep: 1
+      - command: "kubectl -n ${BENCH_NS_ELASTICSEARCH} wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=300s"
+        sleep: 1
+      - command: "/bin/sh -c 'for i in $(seq 1 30); do kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -s --max-time 5 \"http://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/_cluster/health?wait_for_status=yellow&timeout=5s\" | grep -q \"\\\"status\\\"\" && exit 0; sleep 2; done; exit 1'"
+        sleep: 1
+      # In-service proof captured BEFORE the fault: this PUT returns
+      # `"acknowledged":true` while a master is elected. After the scale-down the
+      # setting persists, but is no longer readable -- so this is the only
+      # window in which it can be confirmed, and it is confirmed here.
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -s -XPUT \"http://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/_cluster/settings\" -H \"Content-Type: application/json\" -d \"{\\\"persistent\\\":{\\\"cluster.auto_shrink_voting_configuration\\\":false}}\" | grep -q \"\\\"acknowledged\\\":true\"'"
+        sleep: 1
+      # NOW break quorum: scale masters 3 -> 1 (no master can be elected).
+      - command: "kubectl -n ${BENCH_NS_ELASTICSEARCH} scale sts/{{params.cluster_prefix}} --replicas=1"
+        sleep: 1
+      # Settle the StatefulSet at the controller level after the downscale.
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_ELASTICSEARCH} rollout status sts/{{params.cluster_prefix}} --timeout=300s || true'"
+        sleep: 1
+    # P27 verify: confirm the fault from the CONTROL PLANE only. The StatefulSet
+    # is at 1 replica and the helper pod is Ready. Do NOT curl
+    # `/_cluster/settings` (unreadable on the quorum-broken cluster) -- the
+    # setting was already proven by the apply's `"acknowledged":true` above.
+    verify:
+      - command: "/bin/sh -c '[ \"$(kubectl -n ${BENCH_NS_ELASTICSEARCH} get sts {{params.cluster_prefix}} -o jsonpath=\"{.spec.replicas}\" 2>/dev/null)\" = \"1\" ]'"
+        timeout_sec: 15
+      - command: "kubectl -n ${BENCH_NS_ELASTICSEARCH} wait --for=condition=ready pod/{{params.curl_pod_name}} --timeout=60s"
+        timeout_sec: 70
+
+  # Additive fault re-plant fixture (P32/C8): the unsolved problem is BOTH the
+  # unsafe coordination setting
+  # persistent.cluster.auto_shrink_voting_configuration=false AND the quorum
+  # loss (masters scaled to {{params.target_master_nodes}}). es_env_ready plants
+  # them only on its destructive fresh-build path, which is SKIPPED whenever the
+  # workload already exists (P32 existence gate above) — so on an inherited
+  # HEALTHY cluster the fault is absent and the oracle would otherwise pass with
+  # ZERO agent action. This unit re-plants the exact drift additively: write the
+  # unsafe setting through the still-elected master, THEN scale the StatefulSet
+  # down to the target count (breaking quorum), exactly the fresh build's fault.
+  #
+  # P27: the data-plane steps are valid ONLY while a master is elected. Every
+  # step first confirms `/_cluster/health` answers (a master exists) and skips
+  # cleanly otherwise -- so on the quorum-broken standalone path (fault already
+  # planted) this is a no-op. It never reads `/_cluster/settings` on a
+  # master-less cluster, never deletes the namespace, or touches data.
+  - name: voting_drift_ready
+    on_probe_fail: skip
+    # Probe matches (=> skip) only when the fault is fully present: the STS is
+    # already at the target replica count AND (no master answers — quorum broken
+    # — OR the unsafe setting already reads false). Any healthy/partially-healed
+    # state (replicas above target, or a reachable master with the setting at
+    # its safe default) fails the probe => apply re-plants (C8).
+    probe:
+      - command: "/bin/sh -c 'r=$(kubectl -n ${BENCH_NS_ELASTICSEARCH} get sts {{params.cluster_prefix}} -o jsonpath=\"{.spec.replicas}\" 2>/dev/null); [ \"$r\" = \"{{params.target_master_nodes}}\" ] || exit 1; pw=$(kubectl -n ${BENCH_NS_ELASTICSEARCH} get secret elastic-password -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); A=\"\"; [ -n \"$pw\" ] && A=\"-u elastic:$pw\"; S=https; kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"https://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/\" >/dev/null 2>&1 || S=http; H=$(kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"$S://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/_cluster/health\" 2>/dev/null); echo \"$H\" | grep -q \"\\\"status\\\"\" || exit 0; kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"$S://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/_cluster/settings\" 2>/dev/null | grep -q \"\\\"auto_shrink_voting_configuration\\\":\\\"false\\\"\"'"
+        timeout_sec: 20
+    apply:
+      # Step 1 (in-service proof, P27): plant the unsafe setting while a master
+      # is still reachable; skips silently when the data plane is already down.
+      - command: "/bin/sh -c 'pw=$(kubectl -n ${BENCH_NS_ELASTICSEARCH} get secret elastic-password -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); A=\"\"; [ -n \"$pw\" ] && A=\"-u elastic:$pw\"; S=https; kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"https://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/\" >/dev/null 2>&1 || S=http; kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"$S://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/_cluster/health\" 2>/dev/null | grep -q \"\\\"status\\\"\" || exit 0; kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -sk $A -XPUT \"$S://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/_cluster/settings\" -H \"Content-Type: application/json\" -d \"{\\\"persistent\\\":{\\\"cluster.auto_shrink_voting_configuration\\\":false}}\" >/dev/null 2>&1; true'"
+        sleep: 1
+      # Step 2 (re-break quorum, C8): scale THIS case's StatefulSet down to the
+      # target master count so the advertised "only one master-eligible node"
+      # premise is live again. Best-effort (P8): a foreign-named inherited
+      # cluster is left untouched and degrades to a graded oracle verdict.
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_ELASTICSEARCH} get sts {{params.cluster_prefix}} >/dev/null 2>&1 && kubectl -n ${BENCH_NS_ELASTICSEARCH} scale sts/{{params.cluster_prefix}} --replicas={{params.target_master_nodes}} || true'"
+        sleep: 1
+      - command: "/bin/sh -c 'kubectl -n ${BENCH_NS_ELASTICSEARCH} rollout status sts/{{params.cluster_prefix}} --timeout=180s || true'"
+        timeout_sec: 200
+        sleep: 1
+    # P27: verify only confirms the planted setting WHEN a master is reachable.
+    # On the quorum-broken standalone path (no master) the verify treats the
+    # unreadable data plane as a pass (the setting was already proven by
+    # es_env_ready's pre-scale `"acknowledged":true`), so it never loops to the
+    # setup cap. On a healthy inherited cluster it asserts the setting reads false.
+    verify:
+      - command: "/bin/sh -c 'pw=$(kubectl -n ${BENCH_NS_ELASTICSEARCH} get secret elastic-password -o jsonpath=\"{.data.password}\" 2>/dev/null | base64 -d 2>/dev/null); A=\"\"; [ -n \"$pw\" ] && A=\"-u elastic:$pw\"; S=https; kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"https://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/\" >/dev/null 2>&1 || S=http; kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"$S://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/_cluster/health\" 2>/dev/null | grep -q \"\\\"status\\\"\" || exit 0; kubectl -n ${BENCH_NS_ELASTICSEARCH} exec {{params.curl_pod_name}} -- curl -sk $A --max-time 5 \"$S://{{params.http_service_name}}.${BENCH_NS_ELASTICSEARCH}.svc:9200/_cluster/settings\" 2>/dev/null | grep -q \"\\\"auto_shrink_voting_configuration\\\":\\\"false\\\"\"'"
+        timeout_sec: 30
+
+oracle:
+  verify:
+    commands:
+      - command: "python3 cases/tests/elasticsearch/master-downscale-voting-exclusions/oracle/oracle.py"
+        timeout_sec: 120

@@ -40,6 +40,7 @@ from ..oracle import run_oracle
 from ..evidence import collect_evidence
 from ..adversary import deploy as adversary_deploy, lift as adversary_lift, report as adversary_report
 from ..definitions.cases import decoy_manifest_namespace, discover_case_decoys
+from ..stage_context import stage_env, trusted_input, freeze_stage
 from .. import protocol
 from .._warn import warn
 
@@ -237,7 +238,9 @@ def _run_operation_units(
             capped = cmd_to < base_to
         try:
             proc = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, env=env, timeout=cmd_to
+                cmd, shell=True, capture_output=True, text=True, env=env, timeout=cmd_to,
+                **({"input": trusted_input(cmd_entry, env, create=True)}
+                   if cmd_entry.get("trusted_stdin") else {}),
             )
             out = proc.stdout + proc.stderr
             all_output.append(f"$ {cmd}\n{out}")
@@ -537,6 +540,26 @@ def _apply_namespace_binding(
     return bound
 
 
+def _bind_namespace_identities(
+    environment: Any,
+    roles: list[str],
+    run_id: str,
+    namespace_overrides: dict[str, str] | None = None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Return generated identities and their effective stage bindings.
+
+    The generated mapping stays unchanged for teardown. The effective mapping
+    overlays any debug overrides and is used to route commands and manifests.
+    """
+    overrides = namespace_overrides or {}
+    generated_bindings = dict(environment.bind_namespace_roles(roles, run_id))
+    active_overrides = {
+        role: overrides[role] for role in roles if role in overrides
+    }
+    effective_bindings = {**generated_bindings, **active_overrides}
+    return generated_bindings, effective_bindings
+
+
 def _wait_for_submit(
     submit_path: Path,
     *,
@@ -651,6 +674,7 @@ def run_stage(
     system_prompt: str | None = None,
     stage_index: int = 0,
     prologue: str = "",
+    namespace_overrides: dict[str, str] | None = None,
     defer_cleanup: bool = False,
     created_sink: set[str] | None = None,
     sandbox_options: dict[str, Any] | None = None,
@@ -681,6 +705,9 @@ def run_stage(
         stage's slot (``stage_index``) is re-rendered here with runtime env;
         the rest are used as-is. Concat modes span the whole list (future
         stages included).
+    namespace_overrides:
+        Optional debug-only mapping from workflow namespace identities to
+        borrowed physical Kubernetes namespaces.
     prompt_mode:
         One of the prompt modes defined in ``definitions.prompts``.
     defer_cleanup:
@@ -712,6 +739,7 @@ def run_stage(
     proxy_handle = None
     agent_process = None
     role_bindings: dict[str, str] = {}
+    generated_identity_bindings: dict[str, str] = {}
     identity_bindings: dict[str, str] = {}
     ns_baseline: set[str] = set()
     # Namespaces THIS run creates during setup (preconditions/decoys/adversary),
@@ -745,20 +773,28 @@ def run_stage(
             bind_host="0.0.0.0" if sandbox_mode == "docker" else "127.0.0.1",
         )
 
-        # Step 2: bind namespace roles. namespace_roles are the physical
-        # namespace *identities* we create and tear down; an optional
-        # namespace_binding maps the case's logical roles (source/target/...)
-        # onto those identities (how a migration alternates direction across
-        # stages). The mapped role_bindings drive env vars, commands, and
-        # manifests; the identities drive create/cleanup.
+        # Step 2: bind namespace roles. The generated bindings are retained for
+        # cleanup; a debug override changes the effective namespace used by
+        # commands and manifests without changing those cleanup names. An
+        # optional namespace_binding maps the case's logical roles
+        # (source/target/...) onto those identities (how a migration alternates
+        # direction across stages).
         # An explicit empty list means "no roles" (literal-namespace cases) and
         # must be respected -- `or ["default"]` would re-bind a default and set
         # BENCH_NAMESPACE, breaking those cases' oracles. Only None -> default.
         ns_roles = row.get("namespace_roles")
         if ns_roles is None:
             ns_roles = ["default"]
-        identity_bindings = environment.bind_namespace_roles(ns_roles, run_dir.name)
-        environment.ensure_namespaces(identity_bindings, run_dir=stage_dir)
+        generated_identity_bindings, identity_bindings = _bind_namespace_identities(
+            environment, ns_roles, run_dir.name, namespace_overrides
+        )
+        override_roles = set(namespace_overrides or {})
+        namespaces_to_ensure = {
+            role: namespace
+            for role, namespace in generated_identity_bindings.items()
+            if role not in override_roles
+        }
+        environment.ensure_namespaces(namespaces_to_ensure, run_dir=stage_dir)
         role_bindings = _apply_namespace_binding(
             identity_bindings, row.get("namespace_binding")
         )
@@ -779,7 +815,8 @@ def run_stage(
         # Namespace ($BENCH_NAMESPACE, $BENCH_NS_<ROLE>) and param
         # ($BENCH_PARAM_<KEY>) env vars that case/scenario commands reference.
         param_env = _param_env_vars(case.get("params"))
-        command_env = {**environment.build_namespace_env_vars(role_bindings), **param_env}
+        command_env = {**environment.build_namespace_env_vars(role_bindings), **param_env,
+                       **stage_env(run_dir, stage_id)}
         from ..settings import settings as _settings
         # "fixed" caps at the literal precondition timeout; "auto" floors it at
         # the per-case computed budget so a slow-but-legitimate precondition is
@@ -853,6 +890,7 @@ def run_stage(
         env_vars_adv = {
             **environment.build_env_vars(role_bindings, proxy_port=proxy_handle.port),
             **param_env,
+            **stage_env(run_dir, stage_id),
         }
         deploy_result = adversary_deploy(adv_deploy_units, role_bindings=role_bindings, log_path=adv_log, env_vars=env_vars_adv)
         # SW-4: if the fault failed to deploy, do NOT launch the agent -- the stage
@@ -921,6 +959,8 @@ def run_stage(
         # means namespaces a concurrent run creates during THIS agent's run are
         # never swept up by this run's cleanup.
         ns_created |= _namespaces_created_since(environment, ns_baseline)
+
+        freeze_stage(run_dir, stage_id)
 
         # Step 8: launch agent
         #
@@ -1112,11 +1152,14 @@ def run_stage(
             cleanup_agent(agent_process)
         if proxy_handle is not None:
             proxy_handle.teardown()
-        if not defer_cleanup and identity_bindings and environment is not None:
+        if not defer_cleanup and generated_identity_bindings and environment is not None:
             try:
                 # Tear down the physical identity namespaces (role_bindings may
-                # alias several roles onto the same identity).
-                environment.cleanup_namespaces(identity_bindings, run_dir=stage_dir)
+                # alias several roles onto the same identity). This is the
+                # original generated map, never the debug-overridden bindings.
+                environment.cleanup_namespaces(
+                    generated_identity_bindings, run_dir=stage_dir
+                )
             except Exception as exc:
                 warn(f"failed to delete stage namespaces: {exc}")
         # Hand the recorded created-set back to a deferring caller (the workflow

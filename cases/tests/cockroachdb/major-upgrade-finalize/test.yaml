@@ -1,0 +1,97 @@
+# cockroachdb/major-upgrade-finalize
+# Prepare a coherent source version; hold finalization for major upgrades.
+
+prompt: |
+  CockroachDB cluster {{params.cluster_name}} in namespace ${BENCH_NAMESPACE}
+  is initialized on version {{params.from_version}}. For a major-release upgrade,
+  finalization is held by cluster.preserve_downgrade_option. A patch upgrade
+  within the same release family preserves the inherited upgrade policy.
+
+  Your task:
+  Upgrade all existing nodes to v{{params.to_version}} using a controlled rolling
+  update. For a major-release upgrade, then release the hold and finalize the
+  upgrade. For a same-release patch upgrade, verify the exact target patch on
+  every node; no major-version finalization is required. An already-satisfied
+  target needs no binary replacement. Confirm all selected nodes serve SQL.
+
+  Requirements:
+  - Upgrade binaries first, one node at a time; keep the database available.
+  - Preserve database contents, StatefulSet and PVC identities, replica count,
+    existing TLS or insecure mode, certificate material and other configuration.
+  - Use existing resources; do not reset stores or recreate the deployment.
+  - Restore the original StatefulSet update strategy after the rolling upgrade.
+    The {{params.cluster_name}}-major-upgrade-baseline ConfigMap records it.
+  - Leave other workloads and namespace resources untouched. No operators/CRDs/Helm.
+
+  Useful commands:
+  ```bash
+  kubectl -n ${BENCH_NAMESPACE} get statefulset {{params.cluster_name}} -o yaml
+  kubectl -n ${BENCH_NAMESPACE} get pods
+  ```
+  Inspect the server's existing connection flags before running SQL. Compare the
+  actual node versions with SHOW CLUSTER SETTING version: newer binaries alone
+  do not prove that a major upgrade is finalized. For a major upgrade, wait for
+  completed migrations; a transitional logical version is not the final result.
+  For a patch upgrade, keep the logical release and inherited finalization
+  settings unchanged, and verify the exact patch rather than only its release family.
+
+params:
+  cluster_name:
+    default: crdb-cluster
+    description: CockroachDB StatefulSet name; related resources use this name as their prefix
+  from_version:
+    default: "23.2"
+    description: Source release family (23.2) or exact patch (24.1.0); an unpinned same-release source resolves to .0
+  to_version:
+    default: 24.1.0
+    description: Exact target binary version; same-release patches roll binaries, consecutive major releases also finalize
+
+namespace_contract:
+  required_roles: [default]
+
+metrics:
+  - time_to_first_mutation
+  - destructive_ops
+
+preconditionUnits:
+  - name: crdb_env_ready
+    on_probe_fail: skip
+    probe:
+      - command: "python3 cases/tests/cockroachdb/major-upgrade-finalize/scripts/prepare.py environment probe"
+        timeout_sec: 120
+    apply:
+      - command: "python3 cases/tests/cockroachdb/major-upgrade-finalize/scripts/prepare.py environment apply"
+        timeout_sec: 3600
+    verify:
+      - command: "python3 cases/tests/cockroachdb/major-upgrade-finalize/scripts/prepare.py environment verify"
+        timeout_sec: 120
+
+  - name: crdb_source_version_ready
+    on_probe_fail: skip
+    probe:
+      - command: "python3 cases/tests/cockroachdb/major-upgrade-finalize/scripts/prepare.py source probe"
+        timeout_sec: 120
+    apply:
+      - command: "python3 cases/tests/cockroachdb/major-upgrade-finalize/scripts/prepare.py source apply"
+        timeout_sec: 3600
+    verify:
+      - command: "python3 cases/tests/cockroachdb/major-upgrade-finalize/scripts/prepare.py source verify"
+        timeout_sec: 120
+
+  - name: crdb_upgrade_hold_ready
+    on_probe_fail: skip
+    probe:
+      - command: "python3 cases/tests/cockroachdb/major-upgrade-finalize/scripts/prepare.py hold probe"
+        timeout_sec: 120
+    apply:
+      - command: "python3 cases/tests/cockroachdb/major-upgrade-finalize/scripts/prepare.py hold apply"
+        timeout_sec: 180
+    verify:
+      - command: "python3 cases/tests/cockroachdb/major-upgrade-finalize/scripts/prepare.py hold verify"
+        timeout_sec: 120
+
+oracle:
+  verify:
+    commands:
+      - command: "python3 cases/tests/cockroachdb/major-upgrade-finalize/oracle/oracle.py"
+        timeout_sec: 240

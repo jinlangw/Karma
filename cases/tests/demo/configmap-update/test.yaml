@@ -1,0 +1,37 @@
+# demo/configmap-update
+#
+# Verifies that the agent can locate and patch a single ConfigMap value in the
+# assigned namespace. The precondition seeds demo-config if it is absent.
+# The oracle reads data.value and confirms it matches target_value.
+
+prompt: |
+  Update ConfigMap `demo-config` in the assigned namespace.
+
+  Requirements:
+  - Set `data.value` to `{{params.target_value}}`.
+  - Do not create or delete the ConfigMap; only patch its value.
+
+  Cluster context:
+    Namespace: ${BENCH_NAMESPACE}
+    kubectl -n ${BENCH_NAMESPACE} get configmap demo-config -o yaml
+
+params:
+  target_value:
+    default: x
+
+namespace_contract:
+  required_roles:
+    - default
+
+preconditionUnits:
+  - name: configmap_ready
+    # Probe succeeds if demo-config already exists (skip apply); on failure, apply seeds it.
+    probe: "kubectl -n ${BENCH_NAMESPACE} get configmap demo-config"
+    apply: "kubectl -n ${BENCH_NAMESPACE} apply -f cases/tests/demo/configmap-update/resource/config.yaml"
+    verify: "kubectl -n ${BENCH_NAMESPACE} get configmap demo-config"
+
+oracle:
+  verify:
+    commands:
+      - command: "python3 cases/tests/demo/configmap-update/oracle/oracle.py --expected-value {{params.target_value}}"
+        timeout_sec: 20

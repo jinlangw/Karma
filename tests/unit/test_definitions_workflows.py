@@ -63,7 +63,7 @@ class TestStageParamRefResolvesDefaults:
         # must get "x", not None (the pre-fix behavior).
         wf = normalize_workflow(
             self._wf({}, {"target_value": "${stages.s1.params.target_value}"}),
-            resources_dir=Path("cases"),
+            resources_dir=Path("cases/tests"),
         )
         s2 = next(s for s in wf["stages"] if s["id"] == "s2")
         assert s2["param_overrides"]["target_value"] == "x"
@@ -72,7 +72,7 @@ class TestStageParamRefResolvesDefaults:
         wf = normalize_workflow(
             self._wf({"target_value": "custom"},
                      {"target_value": "${stages.s1.params.target_value}"}),
-            resources_dir=Path("cases"),
+            resources_dir=Path("cases/tests"),
         )
         s2 = next(s for s in wf["stages"] if s["id"] == "s2")
         assert s2["param_overrides"]["target_value"] == "custom"
@@ -122,6 +122,38 @@ class TestNormalizeWorkflow:
         assert len(result["stages"]) == 1
         assert result["adversary"] == []
 
+    def test_preserves_debug_namespace_overrides(self, tmp_path):
+        raw = {
+            "metadata": {"id": "debug-wf"},
+            "spec": {
+                "debug": {"namespace_overrides": {"default": "cockroachdb"}},
+                "stages": [
+                    {"id": "stage_1", "service": "svc", "case": "my-case"}
+                ],
+            },
+        }
+
+        result = normalize_workflow(raw, resources_dir=tmp_path)
+
+        assert result["debug"]["namespace_overrides"] == {
+            "default": "cockroachdb"
+        }
+
+    @pytest.mark.parametrize("namespace", ["CockroachDB", "bad_name", "-bad", "a" * 64])
+    def test_rejects_invalid_debug_namespace_override(self, tmp_path, namespace):
+        raw = {
+            "metadata": {"id": "debug-wf"},
+            "spec": {
+                "debug": {"namespace_overrides": {"default": namespace}},
+                "stages": [
+                    {"id": "stage_1", "service": "svc", "case": "my-case"}
+                ],
+            },
+        }
+
+        with pytest.raises(ValueError, match="workflow schema validation failed"):
+            normalize_workflow(raw, resources_dir=tmp_path)
+
 
 class TestSingleCaseToWorkflow:
     def test_produces_single_stage(self):
@@ -157,18 +189,18 @@ class TestResolveRowsNamespaceRoles:
         # the roles from the case's namespace_contract (regression for the bug
         # where multi-role cases silently bound only "default").
         wf = single_case_to_workflow("demo", "configmap-update-two-ns")
-        rows = resolve_workflow_rows(wf, resources_dir=Path("cases"))
+        rows = resolve_workflow_rows(wf, resources_dir=Path("cases/tests"))
         assert rows[0]["namespace_roles"] == ["source", "target"]
 
     def test_single_role_case_defaults(self):
         wf = single_case_to_workflow("demo", "configmap-update")
-        rows = resolve_workflow_rows(wf, resources_dir=Path("cases"))
+        rows = resolve_workflow_rows(wf, resources_dir=Path("cases/tests"))
         assert rows[0]["namespace_roles"] == ["default"]
 
     def test_explicit_stage_namespaces_win(self):
         wf = single_case_to_workflow("demo", "configmap-update-two-ns",
                                      namespace_roles=["only"])
-        rows = resolve_workflow_rows(wf, resources_dir=Path("cases"))
+        rows = resolve_workflow_rows(wf, resources_dir=Path("cases/tests"))
         assert rows[0]["namespace_roles"] == ["only"]
 
 
@@ -188,10 +220,10 @@ class TestStageIdValidation:
         wf = {"metadata": {"id": "t"}, "spec": {"stages": [
             {"id": "../../../x", "service": "rabbitmq", "case": "failover"}]}}
         with pytest.raises(ValueError, match="invalid stage id"):
-            normalize_workflow(wf, resources_dir=Path("cases"))
+            normalize_workflow(wf, resources_dir=Path("cases/tests"))
 
     def test_valid_stage_id_passes(self):
         wf = {"metadata": {"id": "t"}, "spec": {"stages": [
             {"id": "stage_01", "service": "rabbitmq", "case": "failover"}]}}
-        out = normalize_workflow(wf, resources_dir=Path("cases"))
+        out = normalize_workflow(wf, resources_dir=Path("cases/tests"))
         assert len(out["stages"]) == 1

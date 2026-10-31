@@ -31,10 +31,10 @@ class TestSubcommandParsing:
     def test_run_workflow_all_flags(self):
         ns = _parse([
             "run-workflow", "wf.yaml", "--agent", "x", "--sandbox", "docker",
-            "--dry-run", "--output", "json", "--profile", "p",
+            "--dry-run", "--debug", "--output", "json", "--profile", "p",
         ])
         assert ns.command == "run-workflow" and ns.workflow == "wf.yaml"
-        assert ns.dry_run is True and ns.sandbox == "docker"
+        assert ns.dry_run is True and ns.debug is True and ns.sandbox == "docker"
 
     def test_manual_all_flags(self):
         ns = _parse(["manual", "demo", "configmap-update", "--param", "a=b",
@@ -178,6 +178,43 @@ class TestDispatch:
         with patch("karma.interfaces.cli.main.run_case", return_value=result) as m:
             main(["run-case", "demo", "configmap-update", "--runs-dir", str(tmp_path)])
         m.assert_called_once()
+
+    def test_run_workflow_debug_passes_configured_namespace_override(self, tmp_path):
+        workflow = {
+            "id": "wf",
+            "debug": {"namespace_overrides": {"default": "cockroachdb"}},
+            "stages": [],
+        }
+        result = {"status": "complete", "run_id": "r", "duration_sec": 0.0, "stages": []}
+        with patch("karma.interfaces.cli.main.load_workflow_file", return_value={}), \
+             patch("karma.interfaces.cli.main.normalize_workflow", return_value=workflow), \
+             patch("karma.interfaces.cli.main.run_workflow", return_value=result) as run:
+            main(["run-workflow", "wf.yaml", "--debug", "--output", "json"])
+
+        assert run.call_args.kwargs["namespace_overrides"] == {
+            "default": "cockroachdb"
+        }
+
+    def test_run_workflow_without_debug_does_not_activate_overrides(self, tmp_path):
+        workflow = {
+            "id": "wf",
+            "debug": {"namespace_overrides": {"default": "cockroachdb"}},
+            "stages": [],
+        }
+        result = {"status": "complete", "run_id": "r", "duration_sec": 0.0, "stages": []}
+        with patch("karma.interfaces.cli.main.load_workflow_file", return_value={}), \
+             patch("karma.interfaces.cli.main.normalize_workflow", return_value=workflow), \
+             patch("karma.interfaces.cli.main.run_workflow", return_value=result) as run:
+            main(["run-workflow", "wf.yaml", "--output", "json"])
+
+        assert run.call_args.kwargs["namespace_overrides"] is None
+
+    def test_run_workflow_debug_requires_namespace_override_config(self):
+        workflow = {"id": "wf", "debug": {"namespace_overrides": {}}, "stages": []}
+        with patch("karma.interfaces.cli.main.load_workflow_file", return_value={}), \
+             patch("karma.interfaces.cli.main.normalize_workflow", return_value=workflow):
+            with pytest.raises(SystemExit):
+                main(["run-workflow", "wf.yaml", "--debug"])
 
     def test_manual_dispatches(self):
         with patch("karma.interfaces.cli.main._cmd_manual") as m:

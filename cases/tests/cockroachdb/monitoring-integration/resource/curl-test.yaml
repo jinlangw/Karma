@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${BENCH_PARAM_CLUSTER_NAME}-monitoring-curl
+  namespace: ${BENCH_NAMESPACE}
+spec:
+  restartPolicy: Never
+  containers:
+  - name: curl
+    image: curlimages/curl:8.5.0
+    command:
+      - sh
+      - -c
+      - |
+        echo "curl test pod ready"
+        sleep infinity

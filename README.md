@@ -34,7 +34,7 @@ Instead of treating each benchmark as a one-off script, KARMA models tasks as re
 
 The point is simple: isolated tasks only tell part of the story. Real operations work is stateful. Changes stack up. Fixes in one step can quietly break something earlier. KARMA is built to evaluate agents in that setting.
 
-The suite ships **92 composable cases** and **38 reversible adversary scenarios** across **eight systems** — RabbitMQ, MongoDB, CockroachDB, Elasticsearch, Nginx, Ray, Spark, and a demo service — which recombine into hundreds of example workflows.
+The suite ships **88 composable cases** and **38 reversible adversary scenarios** across **eight systems** — RabbitMQ, MongoDB, CockroachDB, Elasticsearch, Nginx, Ray, Spark, and a demo service — which recombine into hundreds of example workflows.
 
 ## Why KARMA
 
@@ -66,6 +66,12 @@ That is the next direction for KARMA:
 - Python 3.11+
 - `kubectl` on your `PATH`, pointing at a reachable cluster (a local [kind](https://kind.sigs.k8s.io/) cluster works)
 - a kubeconfig at `~/.kube/config` (or set `KUBECONFIG`)
+
+Some case setup scripts use `envsubst` (from GNU gettext) to fill in parameterized Kubernetes manifests. Install it before running those cases:
+
+- macOS: `brew install gettext`; if `envsubst` is not on your `PATH`, run `export PATH="$(brew --prefix gettext)/bin:$PATH"`.
+- Debian/Ubuntu: `sudo apt-get install gettext-base`.
+- Fedora: `sudo dnf install gettext-envsubst`.
 
 ### Install and launch the web UI
 
@@ -116,6 +122,24 @@ List the available agents:
 python3 orchestrator.py info --agents
 ```
 
+For a local debug run that should reuse a specific namespace, a workflow can
+declare a debug-only alias mapping:
+
+```yaml
+spec:
+  debug:
+    namespace_overrides:
+      default: cockroachdb
+```
+
+Activate it with `python3 orchestrator.py run-workflow <workflow.yaml> --debug`.
+The mapping key is a workflow namespace alias (for example, `default`), and the
+value is the Kubernetes namespace name. Without `--debug`, KARMA continues to
+use its normal per-run namespaces. KARMA does not role-label or role-delete the
+overridden namespace; however, the case's own setup commands still run and may
+modify or recreate resources there, so use it with a cluster/namespace intended
+for testing.
+
 ### Run the tests
 
 ```bash
@@ -138,8 +162,13 @@ pytest tests/integration   # requires a reachable cluster
 - `karma/agents/`
   Agent adapters and container definitions (`cli_runner`, `react`, `claude_code`, `codex`, `copilot`, `api`).
 
-- `cases/`
-  Benchmark corpus. Each testcase lives under `cases/<service>/<case>/test.yaml`.
+- `cases/tests/`
+  Benchmark corpus. Each testcase lives under
+  `cases/tests/<service>/<case>/test.yaml`.
+
+- `cases/common/`
+  Shared benchmark helpers, including the CockroachDB library and service
+  support modules for RabbitMQ, Ray, and Spark.
 
 - `workflows/`
   Multi-stage workflow definitions built from reusable testcases.
@@ -172,7 +201,7 @@ Note: the LLM-as-Judge also uses rubric overlays (e.g. `judge_base.yaml`), which
 If you want to understand or extend the repo, start here:
 
 - `docs/developer/adding-a-test-case.md`
-  How to author reusable, workflow-safe testcases.
+  How to author reusable, workflow-safe testcases under `cases/tests/`.
 
 - `docs/developer/kind-cluster-setup.md`
   Setting up a local Kind cluster.
@@ -186,7 +215,8 @@ If you want to understand or extend the repo, start here:
 If you are new to the codebase, a good path is:
 
 1. Skim the Repo Map above and the guides in `docs/developer/`.
-2. Open a workflow in `workflows/` and a testcase in `cases/<service>/<case>/test.yaml`.
+2. Open a workflow in `workflows/` and a testcase in
+   `cases/tests/<service>/<case>/test.yaml`.
 3. Trace `orchestrator.py` into `karma/interfaces/cli/main.py` and `karma/runtime/workflow.py`.
 4. Run a workflow and inspect the artifacts under `runs/`.
 

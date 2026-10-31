@@ -20,13 +20,15 @@ def _run(cfg, seq):
     calls = {"n": 0}
 
     def fake_eval(_cfg, **_kw):
+        assert _kw["env"]["BENCH_ORACLE_PHASE"] == "stage"
         r = seq[min(calls["n"], len(seq) - 1)]
         calls["n"] += 1
         return {"verdict": r, "output": r, "error": None}
 
-    with patch.object(O, "_evaluate_oracle", side_effect=fake_eval):
-        with tempfile.TemporaryDirectory() as d:
-            res = O.run_oracle(cfg, role_bindings={}, run_dir=Path(d), stage_id="s1")
+    with patch.dict(O.os.environ, {"BENCH_ORACLE_PHASE": "inherited-value"}):
+        with patch.object(O, "_evaluate_oracle", side_effect=fake_eval):
+            with tempfile.TemporaryDirectory() as d:
+                res = O.run_oracle(cfg, role_bindings={}, run_dir=Path(d), stage_id="s1")
     return res, calls["n"]
 
 
