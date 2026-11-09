@@ -89,25 +89,25 @@ preconditionUnits:
       # fields; tolerate (|| true) so a sibling case that already owns them on
       # a reused cluster can't abort this precondition. The controller-ready
       # wait below is the real gate.
-      - command: "/bin/sh -c 'kubectl apply -f cases/nginx-ingress/otel_log_format/resource/deploy.yaml || true'"
+      - command: "/bin/sh -c 'kubectl apply -f cases/tests/nginx-ingress/otel_log_format/resource/deploy.yaml || true'"
         sleep: 90
       - command: "kubectl wait --namespace ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/component=controller --timeout=90s"
         sleep: 5
       - command: "kubectl create namespace demo"
         sleep: 0
-      - command: "kubectl -n demo apply -f cases/nginx-ingress/otel_log_format/resource/otel-echo.yaml"
+      - command: "kubectl -n demo apply -f cases/tests/nginx-ingress/otel_log_format/resource/otel-echo.yaml"
         sleep: 2
       - command: "/bin/sh -c 'kubectl -n demo rollout status deploy/otel-echo --timeout=60s || true'"
         sleep: 1
-      - command: "kubectl -n demo apply -f cases/nginx-ingress/otel_log_format/resource/otel-ingress.yaml"
+      - command: "kubectl -n demo apply -f cases/tests/nginx-ingress/otel_log_format/resource/otel-ingress.yaml"
         sleep: 1
-      - command: "/bin/sh -c 'kubectl -n demo get pod curl-test >/dev/null 2>&1 || kubectl -n demo apply -f cases/nginx-ingress/otel_log_format/resource/curl-test.yaml'"
+      - command: "/bin/sh -c 'kubectl -n demo get pod curl-test >/dev/null 2>&1 || kubectl -n demo apply -f cases/tests/nginx-ingress/otel_log_format/resource/curl-test.yaml'"
         sleep: 1
       - command: "kubectl -n demo wait --for=condition=Ready pod/{{params.curl_pod_name}} --timeout=180s"
         sleep: 1
       - command: "kubectl create namespace otel"
         sleep: 0
-      - command: "kubectl -n otel apply -f cases/nginx-ingress/otel_log_format/resource/otel-collector.yaml"
+      - command: "kubectl -n otel apply -f cases/tests/nginx-ingress/otel_log_format/resource/otel-collector.yaml"
         sleep: 2
       - command: "/bin/sh -c 'kubectl -n otel rollout status deploy/otel-collector --timeout=60s || true'"
         sleep: 1
@@ -142,19 +142,19 @@ preconditionUnits:
     apply:
       - command: "/bin/sh -c 'kubectl create namespace demo --dry-run=client -o yaml | kubectl apply -f -'"
         sleep: 0
-      - command: "kubectl -n demo apply -f cases/nginx-ingress/otel_log_format/resource/otel-echo.yaml"
+      - command: "kubectl -n demo apply -f cases/tests/nginx-ingress/otel_log_format/resource/otel-echo.yaml"
         sleep: 2
       - command: "/bin/sh -c 'kubectl -n demo rollout status deploy/otel-echo --timeout=60s || true'"
         sleep: 1
-      - command: "kubectl -n demo apply -f cases/nginx-ingress/otel_log_format/resource/otel-ingress.yaml"
+      - command: "kubectl -n demo apply -f cases/tests/nginx-ingress/otel_log_format/resource/otel-ingress.yaml"
         sleep: 1
-      - command: "/bin/sh -c 'kubectl -n demo get pod {{params.curl_pod_name}} >/dev/null 2>&1 || kubectl -n demo apply -f cases/nginx-ingress/otel_log_format/resource/curl-test.yaml'"
+      - command: "/bin/sh -c 'kubectl -n demo get pod {{params.curl_pod_name}} >/dev/null 2>&1 || kubectl -n demo apply -f cases/tests/nginx-ingress/otel_log_format/resource/curl-test.yaml'"
         sleep: 1
       - command: "/bin/sh -c 'kubectl -n demo wait --for=condition=Ready pod/{{params.curl_pod_name}} --timeout=120s || true'"
         sleep: 1
       - command: "/bin/sh -c 'kubectl create namespace otel --dry-run=client -o yaml | kubectl apply -f -'"
         sleep: 0
-      - command: "kubectl -n otel apply -f cases/nginx-ingress/otel_log_format/resource/otel-collector.yaml"
+      - command: "kubectl -n otel apply -f cases/tests/nginx-ingress/otel_log_format/resource/otel-collector.yaml"
         sleep: 2
       - command: "/bin/sh -c 'kubectl -n otel rollout status deploy/otel-collector --timeout=60s || true'"
         sleep: 1
@@ -165,5 +165,5 @@ preconditionUnits:
 oracle:
   verify:
     commands:
-      - command: "python3 cases/nginx-ingress/otel_log_format/oracle/oracle.py"
+      - command: "python3 cases/tests/nginx-ingress/otel_log_format/oracle/oracle.py"
         timeout_sec: 120
