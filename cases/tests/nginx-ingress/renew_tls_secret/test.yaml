@@ -84,7 +84,7 @@ preconditionUnits:
       # fields make a bare apply fail when a sibling case on a reused cluster
       # already owns them. Tolerate (|| true); the controller-ready wait below
       # is the real gate.
-      - command: "/bin/sh -c 'kubectl apply -f cases/nginx-ingress/renew_tls_secret/resource/deploy.yaml || true'"
+      - command: "/bin/sh -c 'kubectl apply -f cases/tests/nginx-ingress/renew_tls_secret/resource/deploy.yaml || true'"
         sleep: 90
       - command: "kubectl wait --namespace ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/component=controller --timeout=90s"
         sleep: 5
@@ -98,15 +98,15 @@ preconditionUnits:
         sleep: 10
       - command: "kubectl create namespace demo"
         sleep: 0
-      - command: "/bin/sh -c 'kubectl -n demo get pod openssl-toolbox >/dev/null 2>&1 || kubectl -n demo apply -f cases/nginx-ingress/renew_tls_secret/resource/openssl-toolbox.yaml'"
+      - command: "/bin/sh -c 'kubectl -n demo get pod openssl-toolbox >/dev/null 2>&1 || kubectl -n demo apply -f cases/tests/nginx-ingress/renew_tls_secret/resource/openssl-toolbox.yaml'"
         sleep: 2
       - command: "kubectl -n demo wait --for=condition=Ready pod/openssl-toolbox --timeout=180s"
         sleep: 1
-      - command: "kubectl -n demo cp cases/nginx-ingress/renew_tls_secret/resource/leaf.cnf openssl-toolbox:/tmp/leaf.cnf"
+      - command: "kubectl -n demo cp cases/tests/nginx-ingress/renew_tls_secret/resource/leaf.cnf openssl-toolbox:/tmp/leaf.cnf"
         sleep: 1
-      - command: "kubectl -n demo cp cases/nginx-ingress/renew_tls_secret/resource/ca-ext.conf openssl-toolbox:/tmp/ca-ext.conf"
+      - command: "kubectl -n demo cp cases/tests/nginx-ingress/renew_tls_secret/resource/ca-ext.conf openssl-toolbox:/tmp/ca-ext.conf"
         sleep: 1
-      - command: "kubectl -n demo apply -f cases/nginx-ingress/renew_tls_secret/resource/echo-server.yaml"
+      - command: "kubectl -n demo apply -f cases/tests/nginx-ingress/renew_tls_secret/resource/echo-server.yaml"
         sleep: 3
       - command: "/bin/sh -c 'K=$(basename \"${KUBECONFIG:-default}\"); openssl genrsa -out \"/tmp/test-ca.$K.key\" 2048'"
         sleep: 1
@@ -115,26 +115,26 @@ preconditionUnits:
       # Long-lived, currently-valid CA. `-days 9000` (~24.6y) is portable to every
       # openssl/LibreSSL; the old `-not_before/-not_after` flags need OpenSSL 3.2+
       # (the runner/toolbox ships <3.2) and fail with "x509: Use -help for summary".
-      - command: "/bin/sh -c 'K=$(basename \"${KUBECONFIG:-default}\"); openssl x509 -req -in \"/tmp/test-ca.$K.csr\" -signkey \"/tmp/test-ca.$K.key\" -set_serial 01 -extfile cases/nginx-ingress/renew_tls_secret/resource/ca-ext.conf -days 9000 -out \"/tmp/test-ca.$K.crt\"'"
+      - command: "/bin/sh -c 'K=$(basename \"${KUBECONFIG:-default}\"); openssl x509 -req -in \"/tmp/test-ca.$K.csr\" -signkey \"/tmp/test-ca.$K.key\" -set_serial 01 -extfile cases/tests/nginx-ingress/renew_tls_secret/resource/ca-ext.conf -days 9000 -out \"/tmp/test-ca.$K.crt\"'"
         sleep: 1
       - command: "/bin/sh -c 'K=$(basename \"${KUBECONFIG:-default}\"); openssl genrsa -out \"/tmp/expired-tls.$K.key\" 2048'"
         sleep: 1
-      - command: "/bin/sh -c 'K=$(basename \"${KUBECONFIG:-default}\"); openssl req -new -key \"/tmp/expired-tls.$K.key\" -out \"/tmp/expired-tls.$K.csr\" -config cases/nginx-ingress/renew_tls_secret/resource/leaf.cnf'"
+      - command: "/bin/sh -c 'K=$(basename \"${KUBECONFIG:-default}\"); openssl req -new -key \"/tmp/expired-tls.$K.key\" -out \"/tmp/expired-tls.$K.csr\" -config cases/tests/nginx-ingress/renew_tls_secret/resource/leaf.cnf'"
         sleep: 1
       # Backdated/EXPIRED leaf (the agent must renew it). A forward-counting `-days`
       # cannot express a past validity window, so use the portable `openssl ca`
       # path (-startdate/-enddate exist back to OpenSSL 1.x/LibreSSL) with a
       # throwaway CA db. SAN (req_ext) is preserved so curl validation still keys
       # on demo.example.com; the result is an in-the-past cert signed by the CA.
-      - command: "/bin/sh -c 'K=$(basename \"${KUBECONFIG:-default}\"); D=$(mktemp -d); mkdir -p \"$D/newcerts\"; : > \"$D/index.txt\"; echo 1000 > \"$D/serial\"; printf \"[ca]\\ndefault_ca=CA_default\\n[CA_default]\\ndir=%s\\ndatabase=%s/index.txt\\nnew_certs_dir=%s/newcerts\\nserial=%s/serial\\ncertificate=%s\\nprivate_key=%s\\ndefault_md=sha256\\npolicy=pol\\n[pol]\\ncommonName=supplied\\n\" \"$D\" \"$D\" \"$D\" \"$D\" \"/tmp/test-ca.$K.crt\" \"/tmp/test-ca.$K.key\" > \"$D/ca.cnf\"; openssl ca -batch -config \"$D/ca.cnf\" -startdate 20200101000000Z -enddate 20200102000000Z -extfile cases/nginx-ingress/renew_tls_secret/resource/leaf.cnf -extensions req_ext -in \"/tmp/expired-tls.$K.csr\" -out \"/tmp/expired-tls.$K.crt\"; rm -rf \"$D\"'"
+      - command: "/bin/sh -c 'K=$(basename \"${KUBECONFIG:-default}\"); D=$(mktemp -d); mkdir -p \"$D/newcerts\"; : > \"$D/index.txt\"; echo 1000 > \"$D/serial\"; printf \"[ca]\\ndefault_ca=CA_default\\n[CA_default]\\ndir=%s\\ndatabase=%s/index.txt\\nnew_certs_dir=%s/newcerts\\nserial=%s/serial\\ncertificate=%s\\nprivate_key=%s\\ndefault_md=sha256\\npolicy=pol\\n[pol]\\ncommonName=supplied\\n\" \"$D\" \"$D\" \"$D\" \"$D\" \"/tmp/test-ca.$K.crt\" \"/tmp/test-ca.$K.key\" > \"$D/ca.cnf\"; openssl ca -batch -config \"$D/ca.cnf\" -startdate 20200101000000Z -enddate 20200102000000Z -extfile cases/tests/nginx-ingress/renew_tls_secret/resource/leaf.cnf -extensions req_ext -in \"/tmp/expired-tls.$K.csr\" -out \"/tmp/expired-tls.$K.crt\"; rm -rf \"$D\"'"
         sleep: 1
       - command: "/bin/sh -c 'K=$(basename \"${KUBECONFIG:-default}\"); kubectl -n demo create secret tls expired-tls-secret --cert=\"/tmp/expired-tls.$K.crt\" --key=\"/tmp/expired-tls.$K.key\"'"
         sleep: 1
       - command: "/bin/sh -c 'K=$(basename \"${KUBECONFIG:-default}\"); kubectl -n demo create configmap test-ca --from-file=ca.crt=\"/tmp/test-ca.$K.crt\"'"
         sleep: 1
-      - command: "kubectl -n demo apply -f cases/nginx-ingress/renew_tls_secret/resource/demo-ingress-expired.yaml"
+      - command: "kubectl -n demo apply -f cases/tests/nginx-ingress/renew_tls_secret/resource/demo-ingress-expired.yaml"
         sleep: 10
-      - command: "/bin/sh -c 'kubectl -n demo get pod curl-test >/dev/null 2>&1 || kubectl -n demo apply -f cases/nginx-ingress/renew_tls_secret/resource/curl-test.yaml'"
+      - command: "/bin/sh -c 'kubectl -n demo get pod curl-test >/dev/null 2>&1 || kubectl -n demo apply -f cases/tests/nginx-ingress/renew_tls_secret/resource/curl-test.yaml'"
         sleep: 3
       - command: "kubectl -n demo wait --for=condition=Ready pod/{{params.curl_pod_name}} --timeout=180s"
         sleep: 1
@@ -161,15 +161,15 @@ preconditionUnits:
       # nginx_env_ready above.
       - command: "bash -c 'while [ -z \"$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath={.status.loadBalancer.ingress[0].ip} 2>/dev/null)\" ] && [ -z \"$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath=\"{.spec.ports[?(@.port==443)].nodePort}\" 2>/dev/null)\" ]; do echo \"Waiting for ingress-nginx LoadBalancer...\"; sleep 5; done; NODEPORT=$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath=\"{.spec.ports[?(@.port==443)].nodePort}\"); NODE_IP=$(kubectl get nodes -o jsonpath=\"{.items[0].status.addresses[?(@.type==InternalIP)].address}\"); K=$(basename \"${KUBECONFIG:-default}\"); ENVF=\"/tmp/ingress_env.$K\"; echo \"INGRESS_NODE_IP=$NODE_IP\" > \"$ENVF\"; echo \"INGRESS_HTTPS_PORT=$NODEPORT\" >> \"$ENVF\"; echo \"export INGRESS_NODE_IP=$NODE_IP\" >> \"$ENVF\"; echo \"export INGRESS_HTTPS_PORT=$NODEPORT\" >> \"$ENVF\"'"
         sleep: 5
-      - command: "/bin/sh -c 'kubectl -n demo get pod openssl-toolbox >/dev/null 2>&1 || kubectl -n demo apply -f cases/nginx-ingress/renew_tls_secret/resource/openssl-toolbox.yaml'"
+      - command: "/bin/sh -c 'kubectl -n demo get pod openssl-toolbox >/dev/null 2>&1 || kubectl -n demo apply -f cases/tests/nginx-ingress/renew_tls_secret/resource/openssl-toolbox.yaml'"
         sleep: 2
       - command: "kubectl -n demo wait --for=condition=Ready pod/openssl-toolbox --timeout=180s"
         sleep: 1
-      - command: "kubectl -n demo cp cases/nginx-ingress/renew_tls_secret/resource/leaf.cnf openssl-toolbox:/tmp/leaf.cnf"
+      - command: "kubectl -n demo cp cases/tests/nginx-ingress/renew_tls_secret/resource/leaf.cnf openssl-toolbox:/tmp/leaf.cnf"
         sleep: 1
-      - command: "kubectl -n demo cp cases/nginx-ingress/renew_tls_secret/resource/ca-ext.conf openssl-toolbox:/tmp/ca-ext.conf"
+      - command: "kubectl -n demo cp cases/tests/nginx-ingress/renew_tls_secret/resource/ca-ext.conf openssl-toolbox:/tmp/ca-ext.conf"
         sleep: 1
-      - command: "kubectl -n demo apply -f cases/nginx-ingress/renew_tls_secret/resource/echo-server.yaml"
+      - command: "kubectl -n demo apply -f cases/tests/nginx-ingress/renew_tls_secret/resource/echo-server.yaml"
         sleep: 3
       - command: "/bin/sh -c 'K=$(basename \"${KUBECONFIG:-default}\"); openssl genrsa -out \"/tmp/test-ca.$K.key\" 2048'"
         sleep: 1
@@ -177,19 +177,19 @@ preconditionUnits:
         sleep: 1
       # See nginx_env_ready above: portable `-days` CA + `openssl ca` backdated leaf
       # (the old OpenSSL 3.2+ `-not_before/-not_after` flags fail on the runner).
-      - command: "/bin/sh -c 'K=$(basename \"${KUBECONFIG:-default}\"); openssl x509 -req -in \"/tmp/test-ca.$K.csr\" -signkey \"/tmp/test-ca.$K.key\" -set_serial 01 -extfile cases/nginx-ingress/renew_tls_secret/resource/ca-ext.conf -days 9000 -out \"/tmp/test-ca.$K.crt\"'"
+      - command: "/bin/sh -c 'K=$(basename \"${KUBECONFIG:-default}\"); openssl x509 -req -in \"/tmp/test-ca.$K.csr\" -signkey \"/tmp/test-ca.$K.key\" -set_serial 01 -extfile cases/tests/nginx-ingress/renew_tls_secret/resource/ca-ext.conf -days 9000 -out \"/tmp/test-ca.$K.crt\"'"
         sleep: 1
       - command: "/bin/sh -c 'K=$(basename \"${KUBECONFIG:-default}\"); openssl genrsa -out \"/tmp/expired-tls.$K.key\" 2048'"
         sleep: 1
-      - command: "/bin/sh -c 'K=$(basename \"${KUBECONFIG:-default}\"); openssl req -new -key \"/tmp/expired-tls.$K.key\" -out \"/tmp/expired-tls.$K.csr\" -config cases/nginx-ingress/renew_tls_secret/resource/leaf.cnf'"
+      - command: "/bin/sh -c 'K=$(basename \"${KUBECONFIG:-default}\"); openssl req -new -key \"/tmp/expired-tls.$K.key\" -out \"/tmp/expired-tls.$K.csr\" -config cases/tests/nginx-ingress/renew_tls_secret/resource/leaf.cnf'"
         sleep: 1
-      - command: "/bin/sh -c 'K=$(basename \"${KUBECONFIG:-default}\"); D=$(mktemp -d); mkdir -p \"$D/newcerts\"; : > \"$D/index.txt\"; echo 1000 > \"$D/serial\"; printf \"[ca]\\ndefault_ca=CA_default\\n[CA_default]\\ndir=%s\\ndatabase=%s/index.txt\\nnew_certs_dir=%s/newcerts\\nserial=%s/serial\\ncertificate=%s\\nprivate_key=%s\\ndefault_md=sha256\\npolicy=pol\\n[pol]\\ncommonName=supplied\\n\" \"$D\" \"$D\" \"$D\" \"$D\" \"/tmp/test-ca.$K.crt\" \"/tmp/test-ca.$K.key\" > \"$D/ca.cnf\"; openssl ca -batch -config \"$D/ca.cnf\" -startdate 20200101000000Z -enddate 20200102000000Z -extfile cases/nginx-ingress/renew_tls_secret/resource/leaf.cnf -extensions req_ext -in \"/tmp/expired-tls.$K.csr\" -out \"/tmp/expired-tls.$K.crt\"; rm -rf \"$D\"'"
+      - command: "/bin/sh -c 'K=$(basename \"${KUBECONFIG:-default}\"); D=$(mktemp -d); mkdir -p \"$D/newcerts\"; : > \"$D/index.txt\"; echo 1000 > \"$D/serial\"; printf \"[ca]\\ndefault_ca=CA_default\\n[CA_default]\\ndir=%s\\ndatabase=%s/index.txt\\nnew_certs_dir=%s/newcerts\\nserial=%s/serial\\ncertificate=%s\\nprivate_key=%s\\ndefault_md=sha256\\npolicy=pol\\n[pol]\\ncommonName=supplied\\n\" \"$D\" \"$D\" \"$D\" \"$D\" \"/tmp/test-ca.$K.crt\" \"/tmp/test-ca.$K.key\" > \"$D/ca.cnf\"; openssl ca -batch -config \"$D/ca.cnf\" -startdate 20200101000000Z -enddate 20200102000000Z -extfile cases/tests/nginx-ingress/renew_tls_secret/resource/leaf.cnf -extensions req_ext -in \"/tmp/expired-tls.$K.csr\" -out \"/tmp/expired-tls.$K.crt\"; rm -rf \"$D\"'"
         sleep: 1
       - command: "/bin/sh -c 'K=$(basename \"${KUBECONFIG:-default}\"); kubectl -n demo create secret tls expired-tls-secret --cert=\"/tmp/expired-tls.$K.crt\" --key=\"/tmp/expired-tls.$K.key\"'"
         sleep: 1
       - command: "/bin/sh -c 'K=$(basename \"${KUBECONFIG:-default}\"); kubectl -n demo get configmap test-ca >/dev/null 2>&1 || kubectl -n demo create configmap test-ca --from-file=ca.crt=\"/tmp/test-ca.$K.crt\"'"
         sleep: 1
-      - command: "kubectl -n demo apply -f cases/nginx-ingress/renew_tls_secret/resource/demo-ingress-expired.yaml"
+      - command: "kubectl -n demo apply -f cases/tests/nginx-ingress/renew_tls_secret/resource/demo-ingress-expired.yaml"
         sleep: 10
       # Re-create the curl-test pod from THIS case's manifest so it carries the
       # /tmp/tls/ca.crt mount the oracle needs; a curl-test left by a prior
@@ -197,7 +197,7 @@ preconditionUnits:
       # any accumulated cluster state.
       - command: "kubectl -n demo delete pod curl-test --ignore-not-found=true --wait=true"
         sleep: 1
-      - command: "/bin/sh -c 'kubectl -n demo get pod curl-test >/dev/null 2>&1 || kubectl -n demo apply -f cases/nginx-ingress/renew_tls_secret/resource/curl-test.yaml'"
+      - command: "/bin/sh -c 'kubectl -n demo get pod curl-test >/dev/null 2>&1 || kubectl -n demo apply -f cases/tests/nginx-ingress/renew_tls_secret/resource/curl-test.yaml'"
         sleep: 3
       - command: "kubectl -n demo wait --for=condition=Ready pod/{{params.curl_pod_name}} --timeout=180s"
         sleep: 1
@@ -213,5 +213,5 @@ oracle:
       # keep the command budget above that loop. The oracle self-derives the
       # ingress NodeIP/port from the live cluster (Law 4) so no host env file
       # needs sourcing here.
-      - command: "python3 cases/nginx-ingress/renew_tls_secret/oracle/oracle.py"
+      - command: "python3 cases/tests/nginx-ingress/renew_tls_secret/oracle/oracle.py"
         timeout_sec: 150

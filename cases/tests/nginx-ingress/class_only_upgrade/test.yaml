@@ -120,7 +120,7 @@ preconditionUnits:
       # vendored+rewritten from the same pinned controller build the sibling
       # nginx cases use — see the header comment in controller-1.yaml for why
       # vendoring beats a runtime sed pipeline.
-      - command: "/bin/sh -c 'kubectl apply -f cases/nginx-ingress/class_only_upgrade/resource/controller-1.yaml || true'"
+      - command: "/bin/sh -c 'kubectl apply -f cases/tests/nginx-ingress/class_only_upgrade/resource/controller-1.yaml || true'"
         timeout_sec: 60
         sleep: 2
       # P36 fresh-install rule: on a cold cluster a slow image-pull can overrun
@@ -131,7 +131,7 @@ preconditionUnits:
       - command: "/bin/sh -c 'kubectl -n class-ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=180s || true'"
         timeout_sec: 200
         sleep: 2
-      - command: "/bin/sh -c 'kubectl apply -f cases/nginx-ingress/class_only_upgrade/resource/controller-2.yaml || true'"
+      - command: "/bin/sh -c 'kubectl apply -f cases/tests/nginx-ingress/class_only_upgrade/resource/controller-2.yaml || true'"
         timeout_sec: 60
         sleep: 2
       - command: "/bin/sh -c 'kubectl -n class-ingress-nginx-2 rollout status deploy/ingress-nginx-controller --timeout=180s || true'"
@@ -139,16 +139,16 @@ preconditionUnits:
         sleep: 2
       # Cluster-scoped case-owned IngressClasses; tolerant per P26, verified in
       # this unit's verify block (the deletes above make it a clean create).
-      - command: "/bin/sh -c 'kubectl apply -f cases/nginx-ingress/class_only_upgrade/resource/ingress-classes.yaml || true'"
+      - command: "/bin/sh -c 'kubectl apply -f cases/tests/nginx-ingress/class_only_upgrade/resource/ingress-classes.yaml || true'"
         timeout_sec: 30
         sleep: 1
       - command: "kubectl create namespace class-demo"
         timeout_sec: 30
         sleep: 0
-      - command: "kubectl -n class-demo apply -f cases/nginx-ingress/class_only_upgrade/resource/ingress-gateway.yaml"
+      - command: "kubectl -n class-demo apply -f cases/tests/nginx-ingress/class_only_upgrade/resource/ingress-gateway.yaml"
         timeout_sec: 30
         sleep: 1
-      - command: "kubectl -n class-demo apply -f cases/nginx-ingress/class_only_upgrade/resource/demo-app.yaml"
+      - command: "kubectl -n class-demo apply -f cases/tests/nginx-ingress/class_only_upgrade/resource/demo-app.yaml"
         timeout_sec: 30
         sleep: 2
       # P36 fresh-install rule: best-effort so a slow image-pull does not ERROR
@@ -159,11 +159,11 @@ preconditionUnits:
         sleep: 1
       # The planted fault: a classless demo Ingress (fresh apply after the
       # namespace rebuild, so it is guaranteed classless here).
-      - command: "kubectl -n class-demo apply -f cases/nginx-ingress/class_only_upgrade/resource/demo-ingress.yaml"
+      - command: "kubectl -n class-demo apply -f cases/tests/nginx-ingress/class_only_upgrade/resource/demo-ingress.yaml"
         timeout_sec: 30
         sleep: 1
       # P15: get-or-apply for the bare helper Pod (immutable spec).
-      - command: "/bin/sh -c 'kubectl -n class-demo get pod {{params.curl_pod_name}} >/dev/null 2>&1 || kubectl -n class-demo apply -f cases/nginx-ingress/class_only_upgrade/resource/curl-test.yaml'"
+      - command: "/bin/sh -c 'kubectl -n class-demo get pod {{params.curl_pod_name}} >/dev/null 2>&1 || kubectl -n class-demo apply -f cases/tests/nginx-ingress/class_only_upgrade/resource/curl-test.yaml'"
         timeout_sec: 30
         sleep: 1
       - command: "kubectl -n class-demo wait --for=condition=Ready pod/{{params.curl_pod_name}} --timeout=180s"
@@ -224,7 +224,7 @@ preconditionUnits:
       # Restore the full baseline spec (apply resets host/rules a prior agent
       # may have edited), then strip both class mechanisms; a JSON merge-patch
       # null deletes the key and is a no-op when absent.
-      - command: "kubectl -n class-demo apply -f cases/nginx-ingress/class_only_upgrade/resource/demo-ingress.yaml"
+      - command: "kubectl -n class-demo apply -f cases/tests/nginx-ingress/class_only_upgrade/resource/demo-ingress.yaml"
         timeout_sec: 30
         sleep: 1
       - command: "kubectl -n class-demo patch ingress demo-app --type=merge -p '{\"metadata\":{\"annotations\":{\"kubernetes.io/ingress.class\":null}},\"spec\":{\"ingressClassName\":null}}'"
@@ -240,5 +240,5 @@ oracle:
       # 150s budget: the oracle's internal flap-retry loop runs to 110s and
       # each exec is bounded at 30s (worst case 110+30=140s < 150s, O21), so
       # the harness can never kill it before a verdict.
-      - command: "python3 cases/nginx-ingress/class_only_upgrade/oracle/oracle.py"
+      - command: "python3 cases/tests/nginx-ingress/class_only_upgrade/oracle/oracle.py"
         timeout_sec: 150
