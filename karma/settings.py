@@ -12,6 +12,22 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+DEFAULT_RESOURCES_DIR = Path("cases/tests")
+
+
+def top_level_adversaries_dir(resources_dir: Path) -> Path:
+    """Return the top-level adversary directory for a resource root.
+
+    The built-in corpus lives below the cwd-relative ``cases/tests`` root while
+    its adversaries stay at the repository root. Caller-supplied resource
+    roots retain the existing sibling-directory convention.
+    """
+    resources_root = Path(resources_dir)
+    builtin_root = DEFAULT_RESOURCES_DIR.resolve()
+    if resources_root.resolve() == builtin_root:
+        return builtin_root.parent.parent / "adversaries"
+    return resources_root.parent / "adversaries"
+
 
 @dataclass
 class Settings:
@@ -22,7 +38,7 @@ class Settings:
     """
 
     # Filesystem roots
-    resources_dir: Path = field(default_factory=lambda: Path("cases"))
+    resources_dir: Path = field(default_factory=lambda: DEFAULT_RESOURCES_DIR)
     runs_dir: Path = field(default_factory=lambda: Path("runs"))
 
     # HTTP server
@@ -73,7 +89,7 @@ class Settings:
             return os.environ.get(key, default)
 
         return cls(
-            resources_dir=_path("KARMA_RESOURCES_DIR", "cases"),
+            resources_dir=_path("KARMA_RESOURCES_DIR", str(DEFAULT_RESOURCES_DIR)),
             runs_dir=_path("KARMA_RUNS_DIR", "runs"),
             host=_str("KARMA_HOST", "127.0.0.1"),
             port=_int("KARMA_PORT", 8080),

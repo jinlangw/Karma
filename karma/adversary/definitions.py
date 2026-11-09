@@ -5,16 +5,15 @@ An adversary scenario introduces an intentional fault into the cluster
 during a workflow run to evaluate how well the agent diagnoses and
 recovers from unexpected environmental conditions.
 
-Scenarios live in a top-level ``adversaries/`` directory (sibling of
-``cases/``), grouped by service::
+Scenarios live in a top-level ``adversaries/`` directory, grouped by service::
 
     adversaries/{service}/{scenario}/scenario.yaml
 
-The legacy ``cases/{service}/adversarial/{scenario}/`` location is still
-accepted as a fallback. The service is derived from ``inject_at_stage`` via the
-stage service map,
-enforcing that a scenario references resources from within the same test
-suite that owns the inject stage.
+The legacy ``{service}/adversarial/{scenario}/`` layout under the configured
+resource root is still accepted as a fallback. The service is derived from
+``inject_at_stage`` via the stage service map, enforcing that a scenario
+references resources from within the same test suite that owns the inject
+stage.
 
 No runtime imports. Consumed by ``definitions.workflows`` during row
 resolution and by ``runtime.workflow`` during the final lifecycle sweep.
@@ -28,13 +27,14 @@ from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ValidationError
+from ..settings import top_level_adversaries_dir
 
 _SCENARIO_FILE_NAME = "scenario.yaml"
-# Scenarios live in a top-level ``adversaries/`` directory (sibling of
-# ``cases/``), grouped by service: ``adversaries/{service}/{scenario}/``.
+# Scenarios live in a top-level ``adversaries/`` directory, grouped by service:
+# ``adversaries/{service}/{scenario}/``.
 # The legacy in-resources location is still accepted as a fallback.
 _ADVERSARIES_DIR_NAME = "adversaries"
-_ADVERSARIAL_DIR_NAME = "adversarial"  # legacy: cases/{service}/adversarial/
+_ADVERSARIAL_DIR_NAME = "adversarial"  # legacy in-resource adversary layout
 
 
 def _is_safe_segment(name: str) -> bool:
@@ -289,8 +289,10 @@ def resolve_adversary_scenario(
     The service is derived from
     ``stage_service_map[entry["inject_at_stage"]]``, then the scenario
     file is loaded from ``adversaries/{service}/{scenario}/scenario.yaml``
-    (top-level, sibling of ``cases/``), falling back to the legacy
-    ``cases/{service}/adversarial/{scenario}/scenario.yaml`` location.
+    (top-level for the built-in corpus, or sibling of a custom resource root),
+    falling back to the legacy
+    ``{service}/adversarial/{scenario}/scenario.yaml`` location within the
+    configured resource root.
     Parameter substitution uses the same ``{{params.foo}}`` syntax as
     ``test.yaml`` files.
 
@@ -349,9 +351,9 @@ def resolve_adversary_scenario(
             f"-- must be a single path segment"
         )
 
-    # Prefer the top-level adversaries/ tree (sibling of cases/); fall back
-    # to the legacy in-resources location for back-compat.
-    adversaries_dir = resources_dir.parent / _ADVERSARIES_DIR_NAME
+    # Prefer the top-level adversaries/ tree; fall back to the legacy
+    # in-resources location for back-compat.
+    adversaries_dir = top_level_adversaries_dir(resources_dir)
     candidates = [
         adversaries_dir / service / scenario_name / _SCENARIO_FILE_NAME,
         resources_dir / service / _ADVERSARIAL_DIR_NAME / scenario_name / _SCENARIO_FILE_NAME,

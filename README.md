@@ -138,8 +138,11 @@ pytest tests/integration   # requires a reachable cluster
 - `karma/agents/`
   Agent adapters and container definitions (`cli_runner`, `react`, `claude_code`, `codex`, `copilot`, `api`).
 
-- `cases/`
-  Benchmark corpus. Each testcase lives under `cases/<service>/<case>/test.yaml`.
+- `cases/tests/`
+  Benchmark corpus. Each testcase lives under `cases/tests/<service>/<case>/test.yaml`.
+
+- `cases/common/`
+  Shared case helpers for RabbitMQ, Ray, and Spark.
 
 - `workflows/`
   Multi-stage workflow definitions built from reusable testcases.
@@ -186,7 +189,7 @@ If you want to understand or extend the repo, start here:
 If you are new to the codebase, a good path is:
 
 1. Skim the Repo Map above and the guides in `docs/developer/`.
-2. Open a workflow in `workflows/` and a testcase in `cases/<service>/<case>/test.yaml`.
+2. Open a workflow in `workflows/` and a testcase in `cases/tests/<service>/<case>/test.yaml`.
 3. Trace `orchestrator.py` into `karma/interfaces/cli/main.py` and `karma/runtime/workflow.py`.
 4. Run a workflow and inspect the artifacts under `runs/`.
 

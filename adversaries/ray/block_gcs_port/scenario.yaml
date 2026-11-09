@@ -49,7 +49,7 @@ deploy:
     # a selector matching nothing blocks nothing, and kind's default CNI does
     # not enforce NetworkPolicy (so port-reachability is not probeable). The
     # head pods carry app.kubernetes.io/component=head (see the deploy manifest
-    # cases/ray/deploy_cluster/resource/ray-head.yaml), the same label the
+    # cases/tests/ray/deploy_cluster/resource/ray-head.yaml), the same label the
     # podSelector keys on.
     - command: |-
         /bin/sh -c 'kubectl -n {{params.namespace}} get networkpolicy {{params.policy_name}} >/dev/null 2>&1 || exit 1; n=$(kubectl -n {{params.namespace}} get pods -l app.kubernetes.io/component=head --field-selector=status.phase=Running --no-headers 2>/dev/null | grep -c .); [ "$n" -ge 1 ]'
