@@ -12,4 +12,6 @@ Separate the two goals: move common operations into the shared library while pre
 
 Treat the original case/workflow preconditions and recovery branches as the behavioral baseline; do not change them just to simplify extraction.
 
+The immediate stage oracle determines that stage’s pass or fail. The final regression sweep is diagnostic and can flag expected drift from later stages. Report the results separately and investigate the cause before classifying a sweep failure as a regression. Keep the stage assertions intact when rerunning them in the sweep.
+
 For validation scope and when to add tests, follow the [benchmark refactoring guidance](/Users/jimmyouyang/.codex/guidance/benchmark-refactoring.md).
