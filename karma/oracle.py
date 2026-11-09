@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .stage_context import StageIdentity, stage_env, trusted_input
 from . import protocol
 
 
@@ -26,6 +27,7 @@ def _run_commands(
     commands: list[dict[str, Any]],
     *,
     env: dict[str, str],
+    stage: StageIdentity,
     timeout_sec: int,
 ) -> tuple[bool, str]:
     """Run a list of command dicts, returning ``(ok, combined_output)``.
@@ -45,6 +47,8 @@ def _run_commands(
             proc = subprocess.run(
                 cmd, shell=True, capture_output=True, text=True,
                 env=env, timeout=cmd_timeout,
+                **({"input": trusted_input(entry, stage)}
+                   if entry.get("trusted_stdin") else {}),
             )
             out = proc.stdout + proc.stderr
             output_parts.append(f"$ {cmd}\n{out}")
@@ -97,6 +101,7 @@ def _evaluate_oracle(
     oracle_config: dict[str, Any],
     *,
     env: dict[str, str],
+    stage: StageIdentity,
     effective_timeout: int,
 ) -> dict[str, Any]:
     """Run before/verify/script/after commands once and return a verdict dict.
@@ -131,13 +136,13 @@ def _evaluate_oracle(
         # they are not assertions, so their ok flag is intentionally unused. (SS-8)
         _, before_out = _run_commands(
             oracle_config.get("before_commands") or [],
-            env=env, timeout_sec=effective_timeout,
+            env=env, stage=stage, timeout_sec=effective_timeout,
         )
         result["before_output"] = before_out
 
         verify_ok, verify_out = _run_commands(
             oracle_config.get("verify_commands") or [],
-            env=env, timeout_sec=effective_timeout,
+            env=env, stage=stage, timeout_sec=effective_timeout,
         )
         result["output"] = verify_out
 
@@ -159,7 +164,7 @@ def _evaluate_oracle(
 
         after_ok, after_out = _run_commands(
             oracle_config.get("after_commands") or [],
-            env=env, timeout_sec=effective_timeout,
+            env=env, stage=stage, timeout_sec=effective_timeout,
         )
         result["after_output"] = after_out
 
@@ -181,6 +186,7 @@ def run_oracle(
     role_bindings: dict[str, str],
     run_dir: Path,
     stage_id: str,
+    logical_stage_id: str | None = None,
     env_vars: dict[str, str] | None = None,
     timeout_sec: int | None = None,
 ) -> dict[str, Any]:
@@ -214,7 +220,9 @@ def run_oracle(
     run_dir:
         Root directory of the current run.
     stage_id:
-        ID of the stage being evaluated.
+        Stage ID used for the oracle result path.
+    logical_stage_id:
+        Original stage ID for commands and key lookup when writing a final-sweep result.
     env_vars:
         Additional environment variables forwarded to oracle commands.
     timeout_sec:
@@ -245,7 +253,8 @@ def run_oracle(
                     declared += int(_entry.get("timeout_sec") or 0) + int(_entry.get("sleep") or 0)
         effective_timeout = max(_settings.oracle_timeout_sec, declared)
 
-    env = {**os.environ, **role_bindings, **(env_vars or {})}
+    stage = (run_dir, logical_stage_id if logical_stage_id is not None else stage_id)
+    env = {**os.environ, **role_bindings, **(env_vars or {}), **stage_env(*stage)}
 
     # Two reasons to re-run a FAIL before trusting it:
     #   * transient apiserver/proxy blip (connectivity signature) -- short backoff;
@@ -259,7 +268,7 @@ def run_oracle(
     result: dict[str, Any] = {"verdict": "error", "output": "", "error": None}
     for _attempt in range(attempts):
         result = _evaluate_oracle(
-            oracle_config, env=env, effective_timeout=effective_timeout,
+            oracle_config, env=env, stage=stage, effective_timeout=effective_timeout,
         )
         if result["verdict"] != "fail":
             break
@@ -315,13 +324,13 @@ def run_regression_sweep(
     results: dict[str, Any] = {}
     for stage_id, oracle_config in stage_oracle_configs:
         role_bindings = role_bindings_map.get(stage_id) or {}
-        env_vars = (env_vars_map or {}).get(stage_id)
         verdict = run_oracle(
             oracle_config,
             role_bindings=role_bindings,
             run_dir=run_dir,
             stage_id=f"{stage_id}__regression",
-            env_vars=env_vars,
+            logical_stage_id=stage_id,
+            env_vars=(env_vars_map or {}).get(stage_id),
             timeout_sec=timeout_sec,
         )
         results[stage_id] = verdict

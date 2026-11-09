@@ -40,6 +40,7 @@ from ..oracle import run_oracle
 from ..evidence import collect_evidence
 from ..adversary import deploy as adversary_deploy, lift as adversary_lift, report as adversary_report
 from ..definitions.cases import decoy_manifest_namespace, discover_case_decoys
+from ..stage_context import StageIdentity, freeze_stage, stage_env, trusted_input
 from .. import protocol
 from .._warn import warn
 
@@ -157,6 +158,7 @@ def _run_operation_units(
     role_bindings: dict[str, str],
     log_path: Path,
     env_vars: dict[str, str] | None = None,
+    stage: StageIdentity | None = None,
     label: str = "operation",
     phase_timeout_sec: float | None = None,
     on_progress: Any | None = None,
@@ -237,7 +239,9 @@ def _run_operation_units(
             capped = cmd_to < base_to
         try:
             proc = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, env=env, timeout=cmd_to
+                cmd, shell=True, capture_output=True, text=True, env=env, timeout=cmd_to,
+                **({"input": trusted_input(cmd_entry, stage, create=True)}
+                   if cmd_entry.get("trusted_stdin") else {}),
             )
             out = proc.stdout + proc.stderr
             all_output.append(f"$ {cmd}\n{out}")
@@ -809,7 +813,8 @@ def run_stage(
         # Namespace ($BENCH_NAMESPACE, $BENCH_NS_<ROLE>) and param
         # ($BENCH_PARAM_<KEY>) env vars that case/scenario commands reference.
         param_env = _param_env_vars(case.get("params"))
-        command_env = {**environment.build_namespace_env_vars(role_bindings), **param_env}
+        command_env = {**environment.build_namespace_env_vars(role_bindings), **param_env,
+                       **stage_env(run_dir, stage_id)}
         from ..settings import settings as _settings
         # "fixed" caps at the literal precondition timeout; "auto" floors it at
         # the per-case computed budget so a slow-but-legitimate precondition is
@@ -828,6 +833,7 @@ def run_stage(
             role_bindings=role_bindings,
             log_path=precond_log,
             env_vars=command_env,
+            stage=(run_dir, stage_id),
             label="precondition",
             phase_timeout_sec=phase_timeout,
             on_progress=on_progress,
@@ -883,6 +889,7 @@ def run_stage(
         env_vars_adv = {
             **environment.build_env_vars(role_bindings, proxy_port=proxy_handle.port),
             **param_env,
+            **stage_env(run_dir, stage_id),
         }
         deploy_result = adversary_deploy(adv_deploy_units, role_bindings=role_bindings, log_path=adv_log, env_vars=env_vars_adv)
         # SW-4: if the fault failed to deploy, do NOT launch the agent -- the stage
@@ -951,6 +958,8 @@ def run_stage(
         # means namespaces a concurrent run creates during THIS agent's run are
         # never swept up by this run's cleanup.
         ns_created |= _namespaces_created_since(environment, ns_baseline)
+
+        freeze_stage(run_dir, stage_id)
 
         # Step 8: launch agent
         #
