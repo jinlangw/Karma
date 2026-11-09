@@ -140,6 +140,7 @@ def _do_setup(run_id: str) -> None:
             role_bindings=role_bindings,
             log_path=protocol.stage_precondition_log_path(run_dir, _MANUAL_STAGE_ID),
             env_vars=command_env,
+            stage=(run_dir, _MANUAL_STAGE_ID),
             label="precondition",
         )
         # SW-1: record now, before the ok-check's raise, so a precondition-failure

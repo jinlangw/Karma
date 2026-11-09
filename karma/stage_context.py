@@ -13,7 +13,9 @@ import secrets
 import threading
 from pathlib import Path
 
-_records: dict[tuple[str, str], dict] = {}
+StageIdentity = tuple[Path, str]
+
+_records: dict[StageIdentity, dict] = {}
 _lock = threading.Lock()
 
 
@@ -21,11 +23,13 @@ def stage_env(run_dir: Path, stage_id: str) -> dict[str, str]:
     return {"BENCH_RUN_ID": run_dir.name, "BENCH_STAGE_ID": stage_id}
 
 
-def trusted_input(entry: dict, env: dict[str, str], *, create: bool = False) -> str:
+def trusted_input(entry: dict, stage: StageIdentity | None, *, create: bool = False) -> str:
     """Return private JSON only for an explicit trusted_stdin: stage_key command."""
     if entry.get("trusted_stdin") != "stage_key":
         raise ValueError("unsupported trusted command input")
-    identity = (env["BENCH_RUN_ID"], env["BENCH_STAGE_ID"])
+    if stage is None:
+        raise RuntimeError("private stage key unavailable; missing stage identity")
+    identity = _stage_identity(*stage)
     with _lock:
         if identity not in _records:
             if not create:
@@ -35,9 +39,14 @@ def trusted_input(entry: dict, env: dict[str, str], *, create: bool = False) -> 
         return json.dumps(_records[identity])
 
 
+def _stage_identity(run_dir: Path, stage_id: str) -> StageIdentity:
+    return run_dir.resolve(), stage_id
+
+
 def freeze_stage(run_dir: Path, stage_id: str) -> None:
     """Subsequent setup/agent retries must retain the first solver's baseline."""
+    identity = _stage_identity(run_dir, stage_id)
     with _lock:
-        record = _records.get((run_dir.name, stage_id))
+        record = _records.get(identity)
         if record is not None:
             record["frozen"] = True
