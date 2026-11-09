@@ -46,13 +46,11 @@ The report parameter is a **prefix**. The prompt gives the exact formula for its
 cluster/run/stage suffix. Reports and encrypted baselines from earlier stages are
 preserved, including repeated audits of the same cluster with the same report key.
 
-The pinned release graph includes historical workflow compatibility releases;
-that does not assert current vendor support. See the dated
-[official-source research](../../../docs/research/cockroachdb-version-check-supported-releases-20261015.md)
-for all currently supported families, exact patches, registry ARM64/AMD64 checks,
-upgrade rules and licensing requirements. Newly published images must be
-intentionally qualified before changing these pins. The ceiling is deterministic,
-not a floating `latest` tag. No license safeguards are bypassed.
+The pinned release graph includes historical workflow compatibility releases.
+The version policy in [`scripts/versions.py`](scripts/versions.py) lists the
+pinned patches and the supported release families at the time of review.
+Qualify newly published images before updating the pins. The version ceiling
+is pinned, and CockroachDB's license safeguards still apply.
 
 Keys use the existing framework's process-memory stage-key support and trusted
 stdin. This prevents disclosure through ordinary environment/artifact files;

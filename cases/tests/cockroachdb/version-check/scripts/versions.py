@@ -1,7 +1,7 @@
 """Pinned production releases, checked against official docs/registry on 2026-10-15.
 
 CURRENT_SUPPORTED is vendor support; RELEASES also contains historical workflow
-compatibility releases. See docs/research/cockroachdb-version-check-supported-releases-20261015.md.
+compatibility releases.
 Only a single documented binary edge is used; this task never finalizes an upgrade.
 """
 import os
