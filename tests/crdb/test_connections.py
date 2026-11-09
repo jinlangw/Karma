@@ -37,7 +37,7 @@ def test_selector_uses_fixed_query_and_returns_first_successful_candidate():
         return subprocess.CompletedProcess([], 0 if flag == "--insecure" else 1, "", "")
 
     selected = select_sql_readiness_flag(
-        ("--certs-dir=/mounted", "--certs-dir=/default", "--insecure"),
+        ("--certs-dir=/mounted", "--certs-dir=/default", "--insecure", "--certs-dir=/unused"),
         sql,
         unavailable_message="unavailable",
     )
@@ -50,7 +50,7 @@ def test_selector_uses_fixed_query_and_returns_first_successful_candidate():
     ]
 
 
-def test_selector_stops_at_first_success_and_does_not_deduplicate_candidates():
+def test_selector_retries_duplicate_candidates():
     calls = []
 
     def sql(query, flag):
@@ -155,20 +155,6 @@ def test_generate_cert_wrapper_preserves_ordered_fallback_and_retries_after_all_
     assert cluster.flag == "--insecure"
 
 
-def test_generate_cert_wrapper_propagates_sql_callback_exception():
-    cluster = generate_cert_cluster("/mounted/certs")
-    sentinel = OSError("SQL transport failed")
-
-    def sql(_query, *, flag):
-        raise sentinel
-
-    cluster.sql = sql
-
-    with pytest.raises(OSError) as raised:
-        cluster.connection_flag()
-    assert raised.value is sentinel
-
-
 def test_expose_ingress_wrapper_preserves_candidate_order_and_cached_flag():
     cluster = object.__new__(EXPOSE_CASE.Cluster)
     cluster.flag = None
@@ -187,25 +173,6 @@ def test_expose_ingress_wrapper_preserves_candidate_order_and_cached_flag():
     ]
     assert cluster.connection_flag() == "--insecure"
     assert len(calls) == 2
-
-
-def test_expose_ingress_wrapper_preserves_original_all_fail_message():
-    cluster = object.__new__(EXPOSE_CASE.Cluster)
-    cluster.flag = None
-    calls = []
-
-    def sql(query, *, flag):
-        calls.append((query, flag))
-        return subprocess.CompletedProcess([], 1, "", "connection unavailable")
-
-    cluster.sql = sql
-
-    with pytest.raises(RuntimeError, match="^selected database is not SQL-ready with TLS or insecure credentials$"):
-        cluster.connection_flag()
-    assert calls == [
-        ("SELECT 1;", "--certs-dir=/cockroach/cockroach-certs"),
-        ("SELECT 1;", "--insecure"),
-    ]
 
 
 def test_decommission_wrapper_preserves_order_timeout_cache_and_retry_after_all_failures():

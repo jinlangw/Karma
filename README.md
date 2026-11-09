@@ -34,7 +34,7 @@ Instead of treating each benchmark as a one-off script, KARMA models tasks as re
 
 The point is simple: isolated tasks only tell part of the story. Real operations work is stateful. Changes stack up. Fixes in one step can quietly break something earlier. KARMA is built to evaluate agents in that setting.
 
-The suite ships **92 composable cases** and **38 reversible adversary scenarios** across **eight systems** — RabbitMQ, MongoDB, CockroachDB, Elasticsearch, Nginx, Ray, Spark, and a demo service — which recombine into hundreds of example workflows.
+The suite ships **88 composable cases** and **38 reversible adversary scenarios** across **eight systems** — RabbitMQ, MongoDB, CockroachDB, Elasticsearch, Nginx, Ray, Spark, and a demo service — which recombine into hundreds of example workflows.
 
 ## Why KARMA
 

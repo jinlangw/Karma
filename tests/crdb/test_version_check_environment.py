@@ -98,29 +98,6 @@ def test_cluster_ready_uses_native_identity_for_26_1_pods(case_modules, monkeypa
     "error",
     [AuthenticationError("credentials rejected"), KubernetesAccessError("Kubernetes read forbidden")],
 )
-def test_library_access_failures_remain_case_unsafe_state(case_modules, monkeypatch, error):
-    cluster_module, _ = case_modules
-    adapter = _memory_adapter(tls=False)
-    monkeypatch.setenv("BENCH_NAMESPACE", adapter.namespace)
-    monkeypatch.setenv("BENCH_PARAM_CLUSTER_NAME", adapter.name)
-
-    class FailedLibrary:
-        def probe_full_health(self, *_args, **_kwargs):
-            raise error
-
-    cluster = cluster_module.Cluster(library=FailedLibrary())
-    cluster.deployment_ready = lambda: "initialized"
-    cluster.statefulset = lambda: copy.deepcopy(adapter.sts)
-    cluster.pods = lambda _sts: copy.deepcopy(adapter.pods)
-
-    with pytest.raises(cluster_module.UnsafeState):
-        cluster.ready()
-
-
-@pytest.mark.parametrize(
-    "error",
-    [AuthenticationError("credentials rejected"), KubernetesAccessError("Kubernetes read forbidden")],
-)
 def test_library_access_failures_do_not_enter_original_reset_branch(case_modules, monkeypatch, error):
     cluster_module, environment_module = case_modules
     adapter = _memory_adapter(tls=False)

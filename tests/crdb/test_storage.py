@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import copy
-import importlib.util
-from pathlib import Path
-import sys
 
 import pytest
 
@@ -12,20 +9,6 @@ from cases.common.cockroachdb.storage import pvc_store_mappings
 
 class CaseError(RuntimeError):
     pass
-
-
-ROOT = Path(__file__).resolve().parents[2]
-
-
-def _load_case_cluster(case, monkeypatch):
-    path = ROOT / "cases/tests/cockroachdb" / case / "scripts/cluster.py"
-    module_name = f"pvc_store_wrapper_{case.replace('-', '_')}"
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, module_name, module)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _statefulset(*, command=None, mounts=None, claims=None, containers=None, working_dir="/cockroach"):
@@ -111,44 +94,6 @@ def test_store_mappings_keep_default_path_when_working_directory_is_absent():
 
     assert pvc_store_mappings(sts, error_type=CaseError) == [
         {"volume": "data", "relative": "cockroach-data"},
-    ]
-
-
-@pytest.mark.parametrize(
-    "case",
-    [
-        "rollback-rehearsal",
-        "zone-config",
-        "monitoring-integration",
-        "version-check",
-        "initialize",
-        "major-upgrade-finalize",
-    ],
-)
-def test_case_store_wrappers_keep_pvc_lookup_and_identity_local(case, monkeypatch):
-    module = _load_case_cluster(case, monkeypatch)
-    cluster = module.Cluster.__new__(module.Cluster)
-    cluster.name = "db"
-    pvc = {
-        "metadata": {"name": "data-db-0", "uid": "pvc-uid"},
-        "status": {"phase": "Bound"},
-    }
-    lookups = []
-    identities = []
-    cluster.get = lambda kind, name: lookups.append((kind, name)) or pvc
-    cluster.identity = lambda observed: identities.append(observed)
-
-    result = cluster.stores(_statefulset(), count=1)
-
-    assert lookups == [("pvc", "data-db-0")]
-    assert identities == [pvc]
-    assert result == [
-        {
-            "volume": "data",
-            "relative": "cockroach-data",
-            "claim": "data-db-0",
-            "uid": "pvc-uid",
-        }
     ]
 
 

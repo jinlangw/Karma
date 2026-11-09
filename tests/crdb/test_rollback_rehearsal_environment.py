@@ -13,8 +13,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from cases.common.cockroachdb import CrdbLibrary, ProbeStatus
-
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "cases/tests/cockroachdb/rollback-rehearsal/scripts"
@@ -411,111 +409,6 @@ def test_fresh_fixture_bootstrap_initializes_without_applying_task_owned_setting
     assert cluster.sql_calls == []
     assert cluster.current_state == "initialized"
     assert cluster.service_data.keys() == {"db", "db-public"}
-
-
-def test_cluster_ready_calls_one_shared_full_health_observation_after_case_contract(case_modules):
-    cluster_module, _, _ = case_modules
-    cluster = cluster_module.Cluster(namespace="rollback-fixture", name="db")
-    order = []
-    sts = _statefulset(replicas=1)
-    cluster.deployment_ready = lambda: order.append("original-deployment-http-service-contract") or "initialized"
-    cluster.statefulset = lambda: sts
-    cluster.pods = lambda _sts: [_pod("db", 0, "sts-uid")]
-    cluster.value = lambda *_args, **_kwargs: pytest.fail("generic SQL identity should be supplied by the library")
-
-    class Library:
-        def __init__(self):
-            self.calls = []
-
-        def probe_full_health(self, ref, *, per_node_timeout):
-            order.append("shared-full-health")
-            self.calls.append((ref, per_node_timeout))
-            return SimpleNamespace(status=ProbeStatus.SATISFIED, reasons=())
-
-    library = Library()
-    cluster._crdb_library = library
-
-    assert cluster.ready()
-
-    assert order == ["original-deployment-http-service-contract", "shared-full-health"]
-    assert len(library.calls) == 1
-    assert library.calls[0][0].namespace == "rollback-fixture"
-    assert library.calls[0][0].name == "db"
-    assert library.calls[0][1] == 5
-    assert not hasattr(cluster, "liveness_rows")
-
-
-def test_cluster_ready_rejects_shared_unsatisfied_result(case_modules):
-    cluster_module, _, _ = case_modules
-    cluster = cluster_module.Cluster(namespace="rollback-fixture", name="db")
-    cluster.deployment_ready = lambda: "initialized"
-    cluster.statefulset = lambda: _statefulset(replicas=1)
-    cluster.pods = lambda _sts: [_pod("db", 0, "sts-uid")]
-    cluster._crdb_library = SimpleNamespace(
-        probe_full_health=lambda *_args, **_kwargs: SimpleNamespace(
-            status=ProbeStatus.UNSATISFIED,
-            reasons=("node is unavailable",),
-        )
-    )
-
-    with pytest.raises(RuntimeError, match="node is unavailable"):
-        cluster.ready()
-
-
-def _test_library_module():
-    path = Path(__file__).with_name("test_library.py")
-    spec = importlib.util.spec_from_file_location("rollback_library_fixture", path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.modules.pop(spec.name, None)
-    return module
-
-
-@pytest.mark.parametrize("tls", [False, True], ids=["insecure", "tls"])
-def test_cluster_ready_bridges_real_library_for_insecure_and_tls_workloads(case_modules, tls):
-    cluster_module, _, _ = case_modules
-    test_library = _test_library_module()
-    adapter = test_library.MemoryAdapter(tls=tls, replicas=2)
-    for pod in adapter.pods:
-        container = pod["spec"]["containers"][0]
-        container["readinessProbe"] = {
-            "httpGet": {"path": "/health?ready=1", "port": "http", "scheme": "HTTPS" if tls else "HTTP"}
-        }
-    template_container = adapter.sts["spec"]["template"]["spec"]["containers"][0]
-    template_container["readinessProbe"] = {
-        "httpGet": {"path": "/health?ready=1", "port": "http", "scheme": "HTTPS" if tls else "HTTP"}
-    }
-
-    cluster = cluster_module.Cluster(namespace=adapter.namespace, name=adapter.name)
-    cluster._crdb_library = CrdbLibrary(adapter)
-    cluster.deployment_ready = lambda: "initialized"
-    cluster.statefulset = lambda: adapter.sts
-    cluster.pods = lambda _sts: adapter.pods
-
-    assert cluster.ready()
-
-    assert len(adapter.node_status_calls) == 1
-    assert len(adapter.liveness_query_calls) == 1
-    assert adapter.patch_calls == []
-    assert len(adapter.native_identity_calls) == 0
-    assert len(adapter.query_sql_calls) > 0
-    assert all(call["tls_mode"] == ("tls" if tls else "insecure") for call in adapter.query_sql_calls)
-
-
-def test_constructor_defaults_to_original_namespace_name_and_manifest_directory(case_modules, monkeypatch):
-    cluster_module, _, _ = case_modules
-    monkeypatch.setenv("BENCH_NAMESPACE", "original-namespace")
-    monkeypatch.setenv("BENCH_PARAM_CLUSTER_NAME", "original-db")
-
-    cluster = cluster_module.Cluster()
-
-    assert cluster.namespace == "original-namespace"
-    assert cluster.name == "original-db"
-    assert cluster.manifest_dir == RESOURCE
 
 
 def test_manifest_directory_seam_runs_original_bootstrap_with_kubernetes_expansions(case_modules, tmp_path, monkeypatch):

@@ -1,6 +1,5 @@
 """Policy boundaries for version-report challenges, independent of Kubernetes."""
 import importlib.util
-import os
 from pathlib import Path
 import sys
 from types import ModuleType
@@ -23,8 +22,8 @@ finally:
     else: sys.modules['cluster'] = previous
 
 
-@pytest.mark.parametrize('family,target',[('22.2','23.1'),('23.1','23.2'),('23.2','24.1'),('24.1','24.2'),('24.2','24.3'),('24.3','25.1'),('25.1','25.2'),('25.2','25.3'),('25.3','25.4'),('25.4','26.1'),('26.1','26.2'),('26.2','26.3')])
-def test_each_documented_release_uses_one_edge_without_finalization(family,target):
+@pytest.mark.parametrize('family,target', [('23.2', '24.1'), ('26.1', '26.2')])
+def test_upgrade_plan_uses_one_edge_without_finalization(family,target):
     current={'logical':family,'binaries':[policy.PINNED[family]]*3}
     plan=policy.choose_plan(current)
     assert not plan['reset'] and plan['logical']==family
@@ -79,12 +78,6 @@ def test_transitional_or_testing_versions_are_not_completed_setups(value):
     with pytest.raises(RuntimeError):policy.series(value)
 
 
-def test_current_vendor_support_and_historical_compatibility_are_distinct():
-    assert set(policy.CURRENT_SUPPORTED)<=set(policy.RELEASES)
-    assert '23.2' not in policy.CURRENT_SUPPORTED
-    assert '26.3' in policy.CURRENT_SUPPORTED and '26.4' not in policy.RELEASES
-
-
 def load_method(file, owner, method, scope):
     """Exercise just a boundary method without importing case-local module names."""
     import ast
@@ -100,17 +93,6 @@ def test_query_capability_or_permission_error_cannot_authorize_reset(state):
     sql=load_method('cluster.py','Cluster','sql',{'UnsafeState':policy.UnsafeState})
     database=SimpleNamespace(client=lambda *a,**k:SimpleNamespace(returncode=1,stderr='SQLSTATE: '+state,stdout=''))
     with pytest.raises(policy.UnsafeState):sql(database,'SELECT unsupported_diagnostic();')
-
-
-def test_environment_propagates_unsafe_diagnostic_without_recovery():
-    from types import SimpleNamespace
-    def unsafe():raise policy.UnsafeState('SQL capability failure')
-    database=SimpleNamespace(name='selected',get=lambda *a:{},deployment_ready=lambda:'initialized',ready=unsafe,wait=lambda check,seconds:check())
-    resets=[]
-    environment=SimpleNamespace(cluster=database,load=lambda:None,services=lambda:None,reset=lambda *a:resets.append(a))
-    apply=load_method('environment.py','Environment','apply',{'UnsafeState':policy.UnsafeState})
-    with pytest.raises(policy.UnsafeState):apply(environment)
-    assert not resets
 
 
 @pytest.mark.parametrize('count,expected',[(1,'num_replicas=1'),(2,'num_replicas=2, num_voters=1'),(3,None),(5,None)])

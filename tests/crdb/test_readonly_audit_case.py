@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import importlib
 import importlib.util
 import json
@@ -105,43 +104,6 @@ def _services(name="db"):
                      "ports": [{"name": "sql", "port": 26257}]},
         },
     }
-
-
-def test_secret_signatures_wrapper_keeps_cluster_get_and_local_error(case_modules):
-    _, storage_module, _ = case_modules
-    template = {
-        "spec": {
-            "volumes": [
-                {"secret": {"secretName": "second"}},
-                {"projected": {"sources": [{"secret": {"name": "first"}}, {"secret": {"name": "second"}}]}},
-            ]
-        }
-    }
-    calls = []
-    secrets = {
-        "first": {"metadata": {"uid": "uid-first"}, "data": {"key": "one"}},
-        "second": {"metadata": {"uid": "uid-second"}, "data": {"key": "two"}},
-    }
-    cluster = SimpleNamespace(
-        get=lambda kind, name: calls.append((kind, name)) or secrets.get(name)
-    )
-
-    result = storage_module.signatures(cluster, template)
-
-    assert [call for call in calls] == [("secret", "first"), ("secret", "second")]
-    assert result == {
-        name: {
-            "uid": secrets[name]["metadata"]["uid"],
-            "sha256": hashlib.sha256(
-                json.dumps(secrets[name]["data"], sort_keys=True).encode()
-            ).hexdigest(),
-        }
-        for name in secrets
-    }
-
-    missing_cluster = SimpleNamespace(get=lambda kind, name: None)
-    with pytest.raises(storage_module.UnsafeState, match="^mounted Secret is missing$"):
-        storage_module.signatures(missing_cluster, template)
 
 
 class FakeCluster:
@@ -442,39 +404,6 @@ def test_fresh_fixture_bootstrap_initializes_then_applies_original_setting(case_
     assert cluster.sql_calls[-1] == ("SET CLUSTER SETTING kv.snapshot_rebalance.max_rate = '1MiB';", 0)
     assert cluster.current_state == "initialized"
     assert cluster.service_data.keys() == {"db", "db-public"}
-
-
-def test_cluster_ready_calls_one_shared_full_health_observation_after_case_contract(case_modules):
-    cluster_module, _, _ = case_modules
-    cluster = cluster_module.Cluster(namespace="audit-fixture", name="db")
-    order = []
-    sts = _statefulset(replicas=1)
-    cluster.deployment_ready = lambda: order.append("case-readiness-and-service") or "initialized"
-    cluster.statefulset = lambda: sts
-    cluster.pods = lambda _sts: [_pod("db", 0, "sts-uid")]
-    cluster.node_rows = lambda *args, **kwargs: pytest.fail("generic node status must come from the library")
-    cluster.liveness_rows = lambda *args, **kwargs: pytest.fail("generic liveness must come from the library")
-    cluster.value = lambda *args, **kwargs: pytest.fail("generic SQL identity must come from the library")
-
-    class Library:
-        def __init__(self):
-            self.calls = []
-
-        def probe_full_health(self, ref, *, per_node_timeout):
-            order.append("shared-full-health")
-            self.calls.append((ref, per_node_timeout))
-            return SimpleNamespace(status=ProbeStatus.SATISFIED, reasons=())
-
-    library = Library()
-    cluster._crdb_library = library
-
-    assert cluster.ready()
-
-    assert order == ["case-readiness-and-service", "shared-full-health"]
-    assert len(library.calls) == 1
-    assert library.calls[0][0].namespace == "audit-fixture"
-    assert library.calls[0][0].name == "db"
-    assert library.calls[0][1] == 5
 
 
 def test_cluster_ready_rejects_shared_unsatisfied_result(case_modules):

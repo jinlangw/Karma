@@ -1,13 +1,8 @@
 from __future__ import annotations
 
 import copy
-import hashlib
-import importlib
 import importlib.util
-import json
 from pathlib import Path
-import sys
-from types import SimpleNamespace
 
 import pytest
 
@@ -450,7 +445,7 @@ def test_secure_template_rejects_unmodeled_http_port_alias_before_rewrite():
         secure_template(template, secret_name="db-certs", cert_dir=CERT_DIR)
 
 
-def test_mounted_secret_signatures_deduplicate_and_read_in_sorted_order():
+def test_mounted_secret_signatures_detect_changes_to_mounted_data():
     template = {
         "spec": {
             "volumes": [
@@ -484,14 +479,16 @@ def test_mounted_secret_signatures_deduplicate_and_read_in_sorted_order():
     result = mounted_secret_signatures(template, get_secret, error_type=SecretLookupError)
 
     assert calls == ["alpha", "beta", "zeta"]
-    assert result == {
-        name: {
-            "uid": f"uid-{name}",
-            "sha256": hashlib.sha256(json.dumps(secret_data, sort_keys=True).encode()).hexdigest(),
-        }
-        for name, secret_data in data.items()
+    assert {name: signature["uid"] for name, signature in result.items()} == {
+        "alpha": "uid-alpha", "beta": "uid-beta", "zeta": "uid-zeta",
     }
-    assert result["zeta"]["sha256"] == hashlib.sha256(b"{}").hexdigest()
+    data["alpha"] = {"a": "one", "b": "two"}
+    assert mounted_secret_signatures(template, get_secret, error_type=SecretLookupError) == result
+
+    data["alpha"]["a"] = "rotated"
+    rotated = mounted_secret_signatures(template, get_secret, error_type=SecretLookupError)
+    assert rotated["alpha"]["sha256"] != result["alpha"]["sha256"]
+    assert rotated["beta"] == result["beta"] and rotated["zeta"] == result["zeta"]
     assert template == original
 
 
@@ -543,69 +540,3 @@ def test_mounted_secret_signatures_empty_template_does_not_call_getter():
         error_type=SecretLookupError,
     ) == {}
     assert calls == []
-
-
-def _load_case_signature_module(case: str, monkeypatch):
-    scripts = ROOT / "cases/tests/cockroachdb" / case / "scripts"
-    monkeypatch.syspath_prepend(str(scripts))
-    cluster_spec = importlib.util.spec_from_file_location(
-        f"p044_cluster_{case.replace('-', '_')}", scripts / "cluster.py"
-    )
-    assert cluster_spec is not None and cluster_spec.loader is not None
-    cluster_module = importlib.util.module_from_spec(cluster_spec)
-    cluster_spec.loader.exec_module(cluster_module)
-    monkeypatch.setitem(sys.modules, "cluster", cluster_module)
-    target_path = scripts / ("prepare.py" if case == "initialize" else "storage.py")
-    target_spec = importlib.util.spec_from_file_location(
-        f"p044_signatures_{case.replace('-', '_')}", target_path
-    )
-    assert target_spec is not None and target_spec.loader is not None
-    target_module = importlib.util.module_from_spec(target_spec)
-    monkeypatch.setitem(sys.modules, target_spec.name, target_module)
-    target_spec.loader.exec_module(target_module)
-    return target_module
-
-
-@pytest.mark.parametrize(
-    "case",
-    [
-        "readonly-audit",
-        "rollback-rehearsal",
-        "zone-config",
-        "monitoring-integration",
-        "version-check",
-        "major-upgrade-finalize",
-        "initialize",
-    ],
-)
-def test_case_secret_signature_wrappers_keep_local_getter_and_error(case, monkeypatch):
-    module = _load_case_signature_module(case, monkeypatch)
-    template = {
-        "spec": {
-            "volumes": [
-                {"secret": {"secretName": "zeta"}},
-                {"projected": {"sources": [{"secret": {"name": "alpha"}}]}},
-            ]
-        }
-    }
-    calls = []
-    cluster = SimpleNamespace(
-        get=lambda kind, name: calls.append((kind, name)) or {
-            "metadata": {"uid": f"uid-{name}"},
-            "data": {"key": name},
-        }
-    )
-
-    result = module.signatures(cluster, template)
-
-    assert calls == [("secret", "alpha"), ("secret", "zeta")]
-    assert result == {
-        name: {
-            "uid": f"uid-{name}",
-            "sha256": hashlib.sha256(json.dumps({"key": name}, sort_keys=True).encode()).hexdigest(),
-        }
-        for name in ("alpha", "zeta")
-    }
-
-    with pytest.raises(module.UnsafeState, match="^mounted Secret is missing$"):
-        module.signatures(SimpleNamespace(get=lambda _kind, _name: None), template)

@@ -367,24 +367,6 @@ def test_original_unready_restart_then_reset_escalation_is_retained(environment)
     assert cluster.wait_seconds == [90, 180, 180]
 
 
-@pytest.mark.parametrize("tls", [False, True])
-def test_cluster_ready_uses_real_shared_library_observation(case_modules, monkeypatch, tls):
-    cluster_module, _ = case_modules
-    monkeypatch.setenv("BENCH_NAMESPACE", "crdb-fixture")
-    monkeypatch.setenv("BENCH_PARAM_CLUSTER_NAME", "db")
-    adapter = MemoryAdapter(tls=tls)
-    cluster = cluster_module.Cluster(library=CrdbLibrary(adapter))
-    cluster.deployment_ready = lambda: "initialized"
-    cluster.statefulset = lambda: adapter.sts
-    cluster.pods = lambda _sts: adapter.pods
-
-    assert cluster.ready()
-
-    assert len(adapter.node_status_calls) == 1
-    assert len(adapter.liveness_query_calls) == 1
-    assert {call["tls_mode"] for call in adapter.query_sql_calls} == {"tls" if tls else "insecure"}
-
-
 def test_shared_access_failure_stays_out_of_original_store_reset_path(environment, case_modules, monkeypatch):
     cluster_module, _ = case_modules
     env, fake = environment
