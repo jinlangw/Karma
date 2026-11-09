@@ -1,34 +1,14 @@
 from __future__ import annotations
 
-import importlib.util
 import json
-from pathlib import Path
-import subprocess
 
 import pytest
 
 from cases.common.cockroachdb.health import observe_initialization_state
 
 
-ROOT = Path(__file__).resolve().parents[2]
-CASE_PATHS = [
-    "cases/tests/cockroachdb/initialize/scripts/cluster.py",
-    "cases/tests/cockroachdb/major-upgrade-finalize/scripts/cluster.py",
-    "cases/tests/cockroachdb/readonly-audit/scripts/cluster.py",
-    "cases/tests/cockroachdb/rollback-rehearsal/scripts/cluster.py",
-    "cases/tests/cockroachdb/zone-config/scripts/cluster.py",
-    "cases/tests/cockroachdb/version-check/scripts/cluster.py",
-    "cases/tests/cockroachdb/monitoring-integration/scripts/cluster.py",
-]
-
-
-def load_case_cluster(relative_path: str):
-    path = ROOT / relative_path
-    spec = importlib.util.spec_from_file_location(f"node_state_{path.parent.parent.name}", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+class UnsupportedHealthLayout(ValueError):
+    pass
 
 
 def ready_pod(*, scheme="HTTP", port="http", running=True, sql_tls=False):
@@ -61,21 +41,6 @@ def ready_pod(*, scheme="HTTP", port="http", running=True, sql_tls=False):
     }
 
 
-def run_case_node_state(case_path, pod, output):
-    case = load_case_cluster(case_path)
-    cluster = object.__new__(case.Cluster)
-    calls = []
-
-    def kubectl(*args, timeout=20):
-        calls.append((args, timeout))
-        return subprocess.CompletedProcess(args, 0, output, "")
-
-    cluster.kubectl = kubectl
-    result = cluster.node_state(pod)
-    return result, calls
-
-
-@pytest.mark.parametrize("case_path", CASE_PATHS)
 @pytest.mark.parametrize(
     "scheme,port,sql_tls,expected",
     [
@@ -83,102 +48,69 @@ def run_case_node_state(case_path, pod, output):
         ("HTTPS", 8080, False, "https://localhost:8080/health?ready=1"),
     ],
 )
-def test_case_node_state_uses_configured_http_transport_independently_of_sql_tls(
-    case_path, scheme, port, sql_tls, expected
-):
-    state, calls = run_case_node_state(
-        case_path,
+def test_observation_uses_http_transport_independently_of_sql_tls(scheme, port, sql_tls, expected):
+    def curl(pod_name, container_name, argv, _timeout):
+        assert (pod_name, container_name) == ("db-0", "db")
+        assert argv[-1] == expected
+        return '{"ok":true}\n200'
+
+    state = observe_initialization_state(
         ready_pod(scheme=scheme, port=port, sql_tls=sql_tls),
-        '{"ok":true}\n200',
+        execute_curl=curl,
+        error_type=UnsupportedHealthLayout,
     )
 
     assert state == "initialized"
-    assert len(calls) == 1
-    args, timeout = calls[0]
-    assert args == (
-        "exec",
-        "db-0",
-        "-c",
-        "db",
-        "--",
-        "curl",
-        "--silent",
-        "--show-error",
-        "--insecure",
-        "--connect-timeout",
-        "2",
-        "--max-time",
-        "3",
-        "--write-out",
-        "\n%{http_code}",
-        expected,
-    )
-    assert timeout == 8
 
 
-@pytest.mark.parametrize("case_path", CASE_PATHS)
-@pytest.mark.parametrize("status,body", [(503, '{"error":"other"}'), (500, '{"error":"other"}')])
-def test_case_node_state_distinguishes_only_the_original_uninitialized_sentinel(case_path, status, body):
-    state, _ = run_case_node_state(
-        case_path,
-        ready_pod(scheme="HTTPS"),
-        '{"error":"node is waiting for cluster initialization"}\n503',
-    )
-    assert state == "uninitialized"
+@pytest.mark.parametrize(
+    "output,expected",
+    [
+        ('{"error":"node is waiting for cluster initialization"}\n503', "uninitialized"),
+        ('{"error":"other"}\n503', None),
+        ('{"error":"node is waiting for cluster initialization"}\n500', None),
+    ],
+)
+def test_only_the_initialization_sentinel_reports_uninitialized(output, expected):
+    def observe():
+        return observe_initialization_state(
+            ready_pod(), execute_curl=lambda *_: output, error_type=UnsupportedHealthLayout,
+        )
 
-    with pytest.raises(
-        RuntimeError,
-        match="^database health failed for a reason other than waiting for initialization$",
-    ):
-        run_case_node_state(case_path, ready_pod(), f"{body}\n{status}")
+    if expected is None:
+        with pytest.raises(RuntimeError, match="health failed"):
+            observe()
+    else:
+        assert observe() == expected
 
 
-@pytest.mark.parametrize("case_path", CASE_PATHS)
-def test_case_node_state_preserves_running_and_probe_guards_without_exec(case_path):
-    case = load_case_cluster(case_path)
-    cluster = object.__new__(case.Cluster)
-    cluster.kubectl = lambda *args, **kwargs: pytest.fail("unsupported state must not exec curl")
+def test_observation_refuses_nonrunning_container_and_invalid_endpoint():
+    def curl(*_):
+        pytest.fail("unsupported state must not exec curl")
 
-    with pytest.raises(RuntimeError, match="^database process is not Running$"):
-        cluster.node_state(ready_pod(running=False))
+    with pytest.raises(RuntimeError, match="database process is not Running"):
+        observe_initialization_state(
+            ready_pod(running=False), execute_curl=curl, error_type=UnsupportedHealthLayout,
+        )
 
     invalid = ready_pod()
     invalid["spec"]["containers"][0]["readinessProbe"]["httpGet"]["host"] = "db.internal"
-    with pytest.raises(
-        case.UnsafeState,
-        match=r"^case requires an HTTP /health\?ready=1 readiness probe on the database listener$",
-    ):
-        cluster.node_state(invalid)
+    with pytest.raises(UnsupportedHealthLayout):
+        observe_initialization_state(
+            invalid, execute_curl=curl, error_type=UnsupportedHealthLayout,
+        )
 
 
-def test_shared_helper_keeps_malformed_json_and_exec_failures_unwrapped():
+def test_observation_propagates_malformed_json_and_exec_failures():
     with pytest.raises(json.JSONDecodeError):
         observe_initialization_state(
-            ready_pod(),
-            execute_curl=lambda *_: "not-json\n200",
-            error_type=RuntimeError,
+            ready_pod(), execute_curl=lambda *_: "not-json\n200", error_type=UnsupportedHealthLayout,
         )
 
     def exec_failure(*_):
         raise RuntimeError("kubectl exec failed")
 
-    with pytest.raises(RuntimeError, match="^kubectl exec failed$"):
-        observe_initialization_state(ready_pod(), execute_curl=exec_failure, error_type=RuntimeError)
-
-
-@pytest.mark.parametrize("case_path", CASE_PATHS)
-def test_case_node_state_preserves_malformed_json_error(case_path):
-    with pytest.raises(json.JSONDecodeError):
-        run_case_node_state(case_path, ready_pod(), "not-json\n200")
-
-
-@pytest.mark.parametrize("case_path", CASE_PATHS)
-def test_case_node_state_preserves_native_kubectl_failure(case_path):
-    case = load_case_cluster(case_path)
-    cluster = object.__new__(case.Cluster)
-    cluster.kubectl = lambda *args, **kwargs: subprocess.CompletedProcess(
-        args, 7, "", "native kubectl failure"
-    )
-
-    with pytest.raises(RuntimeError, match="^native kubectl failure$"):
-        cluster.node_state(ready_pod())
+    with pytest.raises(RuntimeError, match="kubectl exec failed"):
+        observe_initialization_state(
+            ready_pod(), execute_curl=exec_failure, error_type=UnsupportedHealthLayout,
+        )

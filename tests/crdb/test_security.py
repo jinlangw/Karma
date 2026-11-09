@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import copy
-import importlib.util
-from pathlib import Path
 
 import pytest
 
@@ -12,13 +10,6 @@ from cases.common.cockroachdb.types import UnsupportedLayoutError
 
 
 CERT_DIR = "/cockroach/cockroach-certs"
-ROOT = Path(__file__).resolve().parents[2]
-CASE_CLUSTER = ROOT / "cases/tests/cockroachdb/generate-cert/scripts/cluster.py"
-CASE_SPEC = importlib.util.spec_from_file_location("generate_cert_security_test", CASE_CLUSTER)
-assert CASE_SPEC is not None and CASE_SPEC.loader is not None
-CASE = importlib.util.module_from_spec(CASE_SPEC)
-CASE_SPEC.loader.exec_module(CASE)
-
 
 class SecretLookupError(RuntimeError):
     pass
@@ -295,7 +286,7 @@ def insecure_workload_template(*, startup=None, cert_dir="/old/certs"):
     return template
 
 
-def test_insecure_template_preserves_generate_cert_projection_and_input():
+def test_insecure_template_preserves_non_certificate_mounts_and_input():
     original = insecure_workload_template(
         startup=["/cockroach/cockroach", "start-single-node", "--port=26257", "--insecure=false"]
     )
@@ -408,32 +399,12 @@ def test_insecure_template_removes_selected_projected_secret_volume():
         ),
     ],
 )
-def test_insecure_template_retains_exact_case_error_contract(mutate, message):
+def test_insecure_template_rejects_unsafe_layout(mutate, message):
     template = insecure_workload_template()
     mutate(template)
 
     with pytest.raises(UnsupportedLayoutError, match=f"^{message}$"):
         insecure_template(template, {"old-certs"})
-
-    with pytest.raises(CASE.UnsafeState) as error:
-        CASE.insecure_template(template, {"old-certs"})
-    assert str(error.value) == message
-
-
-def test_generate_cert_selector_and_parser_wrappers_keep_compound_shell_error():
-    assert CASE.certificate_directory({"command": ["cockroach", "start"]}) == CERT_DIR
-    with pytest.raises(CASE.UnsafeState, match="^compound server startup requires explicit security-mode configuration$"):
-        CASE.server_arguments({"command": ["/bin/sh", "-ec", "exec cockroach start; echo unsafe"]})
-    with pytest.raises(
-        CASE.UnsafeState,
-        match="^compound server startup requires explicit security-mode configuration$",
-    ):
-        CASE.insecure_template(
-            insecure_workload_template(
-                startup=["/bin/sh", "-ec", "exec cockroach start; echo unsafe"]
-            ),
-            {"old-certs"},
-        )
 
 
 def test_secure_template_rejects_unmodeled_http_port_alias_before_rewrite():

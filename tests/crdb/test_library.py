@@ -1900,17 +1900,22 @@ class LibraryTests(unittest.TestCase):
         self.assertNotIn("quoted private token", cli_out.getvalue())
         self.assertNotIn("private-key-body-91c0", cli_out.getvalue())
 
-    def test_probe_sql_interface_rejects_arbitrary_statements(self):
-        from cases.common.cockroachdb.types import InvalidRequirementError
-
+    def test_probe_sql_accepts_fixed_readiness_query_and_rejects_mutations(self):
         adapter = KubectlAdapter()
-        with self.assertRaises(UnsupportedLayoutError):
-            adapter.query_sql(
-                namespace="ns", pod_name="db-0", container_name="db", binary="cockroach",
-                sql_host="db-0.db.ns.svc.cluster.local", sql_port=26257, tls_mode="insecure", certs_dir=None,
-                sql="SELECT 1; RESET CLUSTER SETTING sql.defaults.distsql",
-                timeout=1,
-            )
+        connection = {
+            "namespace": "ns", "pod_name": "db-0", "container_name": "db", "binary": "cockroach",
+            "sql_host": "db-0.db.ns.svc.cluster.local", "sql_port": 26257, "tls_mode": "insecure",
+            "certs_dir": None, "timeout": 1,
+        }
+        success = subprocess.CompletedProcess(args=[], returncode=0, stdout="1\n", stderr="")
+        with patch.object(adapter, "_exec", return_value=success) as run:
+            self.assertEqual(adapter.query_sql(**connection, sql="SELECT 1;"), "1\n")
+            with self.assertRaises(UnsupportedLayoutError):
+                adapter.query_sql(
+                    **connection, sql="SELECT 1; RESET CLUSTER SETTING sql.defaults.distsql",
+                )
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[3][-2:], ["-e", "SELECT 1;"])
 
     def test_read_only_witness_has_stable_csv_aliases(self):
         from cases.common.cockroachdb.adapter import _READ_ONLY_SQL
@@ -1993,6 +1998,20 @@ class CliTests(unittest.TestCase):
 
 
 class KubectlAdapterTests(unittest.TestCase):
+
+    def test_resource_reads_use_a_bounded_timeout(self):
+        response = subprocess.CompletedProcess(args=[], returncode=0, stdout='{"kind":"Pod"}', stderr="")
+        for adapter, timeout in ((KubectlAdapter(), 15), (KubectlAdapter(get_timeout=2), 2)):
+            with self.subTest(timeout=timeout):
+                with patch("cases.common.cockroachdb.adapter.subprocess.run", return_value=response) as run:
+                    adapter.get_resource("pod", "ns", "db-0")
+                self.assertEqual(run.call_args.kwargs["timeout"], timeout)
+
+    def test_resource_reads_reject_invalid_timeouts(self):
+        for timeout in (0, float("inf"), True):
+            with self.subTest(timeout=timeout), self.assertRaises(ValueError):
+                KubectlAdapter(get_timeout=timeout)
+
     def test_connection_classifier_retries_only_rollout_network_failures(self):
         self.assertIsInstance(
             KubectlAdapter._connection_error(
