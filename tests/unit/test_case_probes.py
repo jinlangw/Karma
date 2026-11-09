@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-RES = Path(__file__).resolve().parents[2] / "cases"
+RES = Path(__file__).resolve().parents[2] / "cases" / "tests"
 
 
 def _probe_commands(unit):

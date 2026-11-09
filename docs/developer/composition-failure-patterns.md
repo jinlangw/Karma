@@ -183,7 +183,7 @@ labels) so destructive applies never run over inherited state.
 
 `elasticsearch/rotate-http-certs/oracle.py` used `os.environ` without
 `import os` — a 100% crash whenever the check was reached. **Fix:** a static
-import/name-resolution scan over `cases/**/oracle/*.py` catches this class for
+import/name-resolution scan over `cases/tests/**/oracle/*.py` catches this class for
 free; run it before any sweep.
 
 ---

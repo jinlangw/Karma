@@ -27,7 +27,8 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["karma*"]
+include = ["karma*", "cases.common", "cases.common.*"]
+namespaces = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
