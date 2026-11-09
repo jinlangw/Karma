@@ -11,7 +11,7 @@
 
 params:
   namespace:
-    default: cockroachdb
+    default: '${BENCH_NAMESPACE}'
     description: Namespace the CockroachDB StatefulSet runs in.
   statefulset_name:
     default: crdb-cluster

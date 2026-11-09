@@ -60,9 +60,10 @@ spec:
       to_version: 23.2.3
   - id: stage_10
     service: cockroachdb
-    case: partitioned-update
+    case: major-upgrade-finalize
     retries: 0
     param_overrides:
+      from_version: '23.2.3'
       to_version: 23.2.7
   - id: stage_11
     service: cockroachdb

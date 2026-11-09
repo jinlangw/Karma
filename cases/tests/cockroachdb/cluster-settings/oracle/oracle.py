@@ -15,16 +15,13 @@ import subprocess
 import sys
 import time
 
+from cases.common.cockroachdb import CrdbLibrary, KubectlAdapter, TLSMode, WorkloadRef
+from cases.common.cockroachdb.types import CrdbError, UnsupportedLayoutError
 
-# The precondition always stands the cluster up in the literal "cockroachdb"
-# namespace (every apply/exec hardcodes `-n cockroachdb`), so the oracle must
-# look there too. Trusting BENCH_NAMESPACE here pointed the oracle at the
-# role-bound ephemeral namespace where crdb-cluster-0 does not exist, making
-# every check fail with "pods crdb-cluster-0 not found". The sibling cockroachdb
-# oracles (deploy/initialize/health-check-recovery/version-check) all hardcode
-# "cockroachdb" for the same reason.
-NAMESPACE = "cockroachdb"
-POD = "crdb-cluster-0"
+
+NAMESPACE = os.environ["BENCH_NAMESPACE"]
+CLUSTER_NAME = os.environ.get("BENCH_PARAM_CLUSTER_NAME", "crdb-cluster")
+POD = f"{CLUSTER_NAME}-0"
 SETTING_NAME = os.environ.get("BENCH_PARAM_SETTING_NAME", "kv.snapshot_rebalance.max_rate")
 SETTING_VALUE = os.environ.get("BENCH_PARAM_SETTING_VALUE", "128MiB")
 
@@ -46,15 +43,13 @@ SETTING_ALIASES = {
 }
 
 _RESOLVED_NAME = None
+_SQL_CONNECTION = None
+_SQL_CONNECTION_VERIFIED = False
 
 
 def setting_exists(name):
     """Return True if `name` is a known cluster setting on the live cluster."""
-    probe = run([
-        "kubectl", "-n", NAMESPACE, "--request-timeout=20s", "exec", POD, "--",
-        "./cockroach", "sql", conn_flag(), "--format=tsv",
-        "-e", f"SHOW CLUSTER SETTING {name};",
-    ], timeout=25)
+    probe = _run_sql(f"SHOW CLUSTER SETTING {name};", timeout=25, output_format="tsv")
     if probe.returncode == 0:
         return True
     # "unknown setting" means the name does not exist on this version; any other
@@ -106,32 +101,51 @@ def run(cmd, timeout=30):
         return subprocess.CompletedProcess(cmd, 124, "", f"timed out after {timeout}s")
 
 
-_CONN_FLAG = None
-
-
-def conn_flag():
-    """Return the right cockroach SQL connection flag for the live cluster.
-
-    Standalone, this case stands up an INSECURE cluster (`--insecure`). But in a
-    workflow this stage can inherit a SECURE cluster left running by a prior
-    stage (e.g. certificate-rotation), whose precondition probe sees pods already
-    Running and skips its own insecure redeploy. A hardcoded `--insecure` then
-    fails with "node is running secure mode, SSL connection required". Detect the
-    mode once by checking for the mounted certs dir and connect accordingly so
-    the same oracle works in both contexts. Cached after the first probe.
-    """
-    global _CONN_FLAG
-    if _CONN_FLAG is not None:
-        return _CONN_FLAG
-    probe = run([
-        "kubectl", "-n", NAMESPACE, "--request-timeout=15s", "exec", POD, "--",
-        "ls", "/cockroach/cockroach-certs/ca.crt",
-    ], timeout=20)
-    if probe.returncode == 0:
-        _CONN_FLAG = "--certs-dir=/cockroach/cockroach-certs"
+def _sql_command(connection, sql, output_format=None):
+    if connection.tls_mode is TLSMode.TLS:
+        if not connection.certs_dir:
+            raise UnsupportedLayoutError("Observed TLS connection has no supported certificate directory")
+        connection_flags = [f"--certs-dir={connection.certs_dir}"]
+    elif connection.tls_mode is TLSMode.INSECURE:
+        connection_flags = ["--insecure"]
     else:
-        _CONN_FLAG = "--insecure"
-    return _CONN_FLAG
+        raise UnsupportedLayoutError("Observed CockroachDB SQL TLS mode is unresolved")
+    connection_flags.extend((f"--host={connection.sql_host}", f"--port={connection.sql_port}"))
+    command = [
+        "kubectl", "-n", connection.namespace, "--request-timeout=20s", "exec",
+        connection.pod_name, "--container", connection.container_name, "--",
+        connection.sql_binary, "sql", *connection_flags,
+    ]
+    if output_format is not None:
+        command.append(f"--format={output_format}")
+    command.extend(("-e", sql))
+    return command
+
+
+def _observe_sql_connection():
+    global _SQL_CONNECTION
+    if _SQL_CONNECTION is None:
+        library = CrdbLibrary(KubectlAdapter(get_timeout=2.0))
+        _SQL_CONNECTION = library.inspect_sql_connection(WorkloadRef(NAMESPACE, CLUSTER_NAME), ordinal=0)
+    return _SQL_CONNECTION
+
+
+def _run_sql(sql, *, timeout, output_format=None):
+    """Run oracle SQL through the selected Pod's observed connection only."""
+    global _SQL_CONNECTION_VERIFIED
+    try:
+        connection = _observe_sql_connection()
+        command = _sql_command(connection, sql, output_format)
+        if not _SQL_CONNECTION_VERIFIED:
+            readiness = run(_sql_command(connection, "SELECT 1;"), timeout=10)
+            if readiness.returncode != 0:
+                return readiness
+            _SQL_CONNECTION_VERIFIED = True
+    except CrdbError as error:
+        # Library errors have credential-safe messages. Preserve them for the
+        # existing oracle read/retry path without attempting an insecure mode.
+        return subprocess.CompletedProcess([], 1, "", str(error))
+    return run(command, timeout=timeout)
 
 
 _BYTE_UNITS = {
@@ -205,12 +219,7 @@ def get_setting():
     legacy/removed alias.
     """
     name = resolve_setting_name()
-    cmd = [
-        "kubectl", "-n", NAMESPACE, "--request-timeout=20s", "exec", POD, "--",
-        "./cockroach", "sql", conn_flag(), "--format=tsv",
-        "-e", f"SHOW CLUSTER SETTING {name};",
-    ]
-    result = run(cmd, timeout=25)
+    result = _run_sql(f"SHOW CLUSTER SETTING {name};", timeout=25, output_format="tsv")
     if result.returncode != 0:
         return None, result.stderr.strip() or "SHOW CLUSTER SETTING failed"
     lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
@@ -226,6 +235,9 @@ def check(errors, phase):
     CockroachDB itself accepts SQL clients ("server is not accepting clients",
     SQLSTATE 57P01), so retry the read briefly before treating it as a failure.
     """
+    global _SQL_CONNECTION, _SQL_CONNECTION_VERIFIED
+    _SQL_CONNECTION = None
+    _SQL_CONNECTION_VERIFIED = False
     actual = err = None
     # Bound by wall-clock, not attempt count: each get_setting is itself capped
     # (see run()), so a stalled exec is killed and reissued on a fresh
@@ -249,7 +261,7 @@ def check(errors, phase):
 def wait_pod_ready(deadline_sec=300):
     """Wait for POD to exist AND become Ready, tolerating the recreation window.
 
-    The agent and this oracle both restart crdb-cluster-0 to test persistence,
+    The agent and this oracle both restart the target's pod 0 to test persistence,
     so the pod is frequently mid-recreate (NotFound, then Pending) when called.
     `kubectl wait` returns immediately with an error when the pod object does
     not yet exist, so this polls until the pod reappears and reports Ready,
@@ -281,7 +293,7 @@ def main():
     """Verify the configured setting matches the target before and after restart."""
     errors = []
 
-    # The agent may have just restarted crdb-cluster-0 to test persistence
+    # The agent may have just restarted the target's pod 0 to test persistence
     # itself, leaving it briefly absent/not-ready. Wait for it to settle before
     # the first read so a transient restart window isn't mistaken for a failure.
     # Use a shorter budget here than the post-delete wait below: the worst-case

@@ -34,7 +34,7 @@ Instead of treating each benchmark as a one-off script, KARMA models tasks as re
 
 The point is simple: isolated tasks only tell part of the story. Real operations work is stateful. Changes stack up. Fixes in one step can quietly break something earlier. KARMA is built to evaluate agents in that setting.
 
-The suite ships **92 composable cases** and **38 reversible adversary scenarios** across **eight systems** — RabbitMQ, MongoDB, CockroachDB, Elasticsearch, Nginx, Ray, Spark, and a demo service — which recombine into hundreds of example workflows.
+The suite ships **88 composable cases** and **38 reversible adversary scenarios** across **eight systems** — RabbitMQ, MongoDB, CockroachDB, Elasticsearch, Nginx, Ray, Spark, and a demo service — which recombine into hundreds of example workflows.
 
 ## Why KARMA
 
@@ -66,6 +66,12 @@ That is the next direction for KARMA:
 - Python 3.11+
 - `kubectl` on your `PATH`, pointing at a reachable cluster (a local [kind](https://kind.sigs.k8s.io/) cluster works)
 - a kubeconfig at `~/.kube/config` (or set `KUBECONFIG`)
+
+Some case setup scripts use `envsubst` (from GNU gettext) to fill in parameterized Kubernetes manifests. Install it before running those cases:
+
+- macOS: `brew install gettext`; if `envsubst` is not on your `PATH`, run `export PATH="$(brew --prefix gettext)/bin:$PATH"`.
+- Debian/Ubuntu: `sudo apt-get install gettext-base`.
+- Fedora: `sudo dnf install gettext-envsubst`.
 
 ### Install and launch the web UI
 
@@ -160,7 +166,7 @@ pytest tests/integration   # requires a reachable cluster
   Benchmark corpus. Each testcase lives under `cases/tests/<service>/<case>/test.yaml`.
 
 - `cases/common/`
-  Shared case helpers for RabbitMQ, Ray, and Spark.
+  Shared case helpers for CockroachDB, RabbitMQ, Ray, and Spark.
 
 - `workflows/`
   Multi-stage workflow definitions built from reusable testcases.

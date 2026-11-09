@@ -28,9 +28,10 @@ spec:
       setting_value: 320MiB
   - id: stage_03
     service: cockroachdb
-    case: partitioned-update
+    case: major-upgrade-finalize
     retries: 0
     param_overrides:
+      from_version: '24.1.0'
       to_version: 24.1.1
   - id: stage_04
     service: cockroachdb

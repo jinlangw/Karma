@@ -17,7 +17,7 @@
 
 params:
   namespace:
-    default: cockroachdb
+    default: '${BENCH_NAMESPACE}'
     description: Namespace the CockroachDB cluster runs in.
   pod:
     default: crdb-cluster-0

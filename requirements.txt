@@ -1,5 +1,6 @@
 # Runtime dependencies
 pyyaml>=6.0
+cryptography>=44.0.0
 openai>=1.0
 pydantic>=2.0
 flask>=3.0

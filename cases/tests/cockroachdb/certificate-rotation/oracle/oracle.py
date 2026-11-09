@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 # Verify the TLS certs were rotated (secure SQL works, node/CA fingerprints,
-# ~1y validity). The cert secret name (BENCH_PARAM_CERT_SECRET_NAME) and the
-# pre-rotation fingerprint ConfigMap name (BENCH_PARAM_OLD_CERT_CONFIGMAP_NAME)
-# come from the case params, so a workflow that overrides them is honored
-# instead of a hardcoded value. Standalone (default params) this behaves
-# identically.
+# ~1y validity). The cluster name is configurable through the case params; its
+# TLS Secret and baseline ConfigMap use names derived from that cluster name.
 import os
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
-CERT_SECRET = os.environ.get("BENCH_PARAM_CERT_SECRET_NAME", "crdb-cluster-certs")
-OLD_CERT_CM = os.environ.get("BENCH_PARAM_OLD_CERT_CONFIGMAP_NAME", "crdb-old-cert")
+CLUSTER_NAME = os.environ.get("BENCH_PARAM_CLUSTER_NAME", "crdb-cluster")
+CERT_SECRET = f"{CLUSTER_NAME}-certs"
+OLD_CERT_CM = f"{CLUSTER_NAME}-old-cert"
+NAMESPACE = os.environ.get("BENCH_NAMESPACE")
+NODE_NAME = f"{CLUSTER_NAME}-0"
 
 
 def run(cmd, timeout=30):
@@ -24,24 +24,115 @@ def run(cmd, timeout=30):
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        # TimeoutExpired may expose captured output as bytes even when
+        # subprocess.run was called with text=True.
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode(errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
         return subprocess.CompletedProcess(
-            cmd, 124, exc.stdout or "", (exc.stderr or "") + "\n[command timed out]"
+            cmd, 124, stdout, stderr + "\n[command timed out]"
         )
 
 
-def served_leaf_fingerprint():
-    """SHA-256 fingerprint of the leaf cert crdb-cluster-0 actually SERVES (O37).
+def _observed_tls_sql_result():
+    """Retry secure SQL using the selected live Pod's observed connection.
+
+    The common library is loaded only after the legacy Oracle command fails.
+    This keeps the existing standalone Oracle path and its first SQL attempt
+    unchanged. The retry remains TLS-only; it never treats a connection error
+    as permission to use insecure SQL.
+    """
+    try:
+        from cases.common.cockroachdb import CrdbError, CrdbLibrary, KubectlAdapter, TLSMode, WorkloadRef
+        from cases.common.cockroachdb.connections import select_sql_readiness_flag
+    except ImportError:
+        return None
+
+    try:
+        library = CrdbLibrary(KubectlAdapter(kubectl="kubectl", get_timeout=1.0))
+        connection = library.inspect_sql_connection(WorkloadRef(NAMESPACE, CLUSTER_NAME), ordinal=0)
+    except (CrdbError, OSError):
+        return None
+
+    if (
+        connection.namespace != NAMESPACE
+        or connection.workload_name != CLUSTER_NAME
+        or connection.pod_name != NODE_NAME
+        or connection.tls_mode != TLSMode.TLS
+    ):
+        return None
+
+    cert_directories = ["/cockroach/cockroach-certs"]
+    if connection.certs_dir and connection.certs_dir not in cert_directories:
+        cert_directories.append(connection.certs_dir)
+    candidates = [f"--certs-dir={cert_dir}" for cert_dir in cert_directories]
+
+    successful_result = None
+
+    def query(sql, certs_flag):
+        nonlocal successful_result
+        command = [
+            "kubectl", "-n", NAMESPACE, "exec", connection.pod_name,
+            "--container", connection.container_name, "--",
+            connection.sql_binary, "sql", certs_flag,
+            f"--host={connection.sql_host}", f"--port={connection.sql_port}",
+            "-e", sql,
+        ]
+        result = run(command, timeout=15)
+        if result.returncode == 0:
+            successful_result = result
+        return result
+
+    try:
+        select_sql_readiness_flag(
+            candidates,
+            query,
+            unavailable_message="Observed secure SQL connection failed",
+        )
+    except (CrdbError, RuntimeError, OSError):
+        return None
+    return successful_result
+
+
+def secure_sql_result():
+    """Run the original SQL check first, with an observed TLS-only retry."""
+    secure_cmd = [
+        "kubectl",
+        "-n",
+        NAMESPACE,
+        "exec",
+        NODE_NAME,
+        "--",
+        "./cockroach",
+        "sql",
+        "--certs-dir=/cockroach/cockroach-certs",
+        "-e",
+        "SELECT 1;",
+    ]
+    result = run(secure_cmd)
+    if result.returncode != 0:
+        observed_result = _observed_tls_sql_result()
+        if observed_result is not None:
+            return observed_result
+    return result
+
+
+def served_leaf_fingerprint(node_name):
+    """SHA-256 fingerprint of a target cluster node's served leaf cert (O37).
 
     Read via a live TLS handshake from the openssl-toolbox pod (the crdb image
-    does not ship openssl, O12) against pod-0's HTTP port 8080 -- a secure
+    does not ship openssl, O12) against the node's HTTP port 8080 -- a secure
     CockroachDB node serves its node cert there. The s_client is bounded both
-    in-pod (`timeout 15`) and on the exec (O17). Returns (fingerprint, error).
+    in-pod by a 15-second timeout and on the exec (O17). Returns (fingerprint, error).
     """
     cmd = [
-        "kubectl", "-n", "cockroachdb", "exec", "openssl-toolbox", "--",
+        "kubectl", "-n", NAMESPACE, "exec", "openssl-toolbox", "--",
         "sh", "-c",
         "timeout 15 openssl s_client -connect "
-        "crdb-cluster-0.crdb-cluster.cockroachdb.svc.cluster.local:8080 "
+        f"{node_name}.{CLUSTER_NAME}.{NAMESPACE}.svc.cluster.local:8080 "
         "-showcerts </dev/null 2>/dev/null | "
         "openssl x509 -noout -fingerprint -sha256",
     ]
@@ -51,23 +142,46 @@ def served_leaf_fingerprint():
     return result.stdout.strip().split("=", 1)[-1].upper().replace(":", ""), ""
 
 
+def statefulset_replicas():
+    """Return the target StatefulSet's desired replica count, or an error."""
+    result = run([
+        "kubectl", "-n", NAMESPACE, "get", "statefulset", CLUSTER_NAME,
+        "-o", "jsonpath={.spec.replicas}",
+    ])
+    if result.returncode != 0:
+        return 0, result.stderr.strip() or "unable to read StatefulSet replicas"
+    try:
+        replicas = int(result.stdout.strip())
+    except ValueError:
+        return 0, f"invalid StatefulSet replica count: {result.stdout.strip()!r}"
+    if replicas < 1:
+        return 0, f"target StatefulSet has invalid replica count: {replicas}"
+    return replicas, ""
+
+
+def target_pod_names():
+    """Return names of pods belonging to the selected cluster."""
+    result = run([
+        "kubectl", "-n", NAMESPACE, "get", "pods",
+        "-l", f"app.kubernetes.io/instance={CLUSTER_NAME},app.kubernetes.io/name=cockroachdb",
+        "-o", "name",
+    ])
+    if result.returncode != 0:
+        return [], result.stderr.strip() or "unable to list target cluster pods"
+    return sorted(
+        line.split("/", 1)[-1]
+        for line in result.stdout.splitlines()
+        if line.strip()
+    ), ""
+
+
 def main():
     errors = []
+    if not NAMESPACE:
+        print("Certificate rotation verification failed: BENCH_NAMESPACE is not set", file=sys.stderr)
+        return 1
 
-    secure_cmd = [
-        "kubectl",
-        "-n",
-        "cockroachdb",
-        "exec",
-        "crdb-cluster-0",
-        "--",
-        "./cockroach",
-        "sql",
-        "--certs-dir=/cockroach/cockroach-certs",
-        "-e",
-        "SELECT 1;",
-    ]
-    secure_result = run(secure_cmd)
+    secure_result = secure_sql_result()
     if secure_result.returncode != 0:
         errors.append("TLS connection failed after certificate rotation")
         errors.append(f"Error: {secure_result.stderr.strip()}")
@@ -75,7 +189,7 @@ def main():
     old_fp_cmd = [
         "kubectl",
         "-n",
-        "cockroachdb",
+        NAMESPACE,
         "get",
         "configmap",
         OLD_CERT_CM,
@@ -93,7 +207,7 @@ def main():
     old_na_cmd = [
         "kubectl",
         "-n",
-        "cockroachdb",
+        NAMESPACE,
         "get",
         "configmap",
         OLD_CERT_CM,
@@ -117,7 +231,7 @@ def main():
     new_fp_cmd = [
         "/bin/sh",
         "-c",
-        f"kubectl -n cockroachdb get secret {CERT_SECRET} "
+        f"kubectl -n {NAMESPACE} get secret {CERT_SECRET} "
         "-o jsonpath='{.data.node\\.crt}' | base64 -d | "
         "openssl x509 -noout -fingerprint -sha256",
     ]
@@ -134,37 +248,63 @@ def main():
     # O37: the Secret bytes alone do not prove the rotation took effect -- the
     # SQL check above also succeeds against the OLD served cert (same CA), so
     # "updated the Secret but never restarted the nodes" would score as done.
-    # Require the leaf cert pod-0 actually presents in the TLS handshake to
-    # equal the Secret's new node.crt. The pods may still be settling from the
-    # agent's restart, so poll to a bounded deadline (~90s, kept under the
-    # oracle timeout_sec per O21); a node never reloaded keeps serving the old
-    # leaf and still fails after the deadline.
+    # Require every expected StatefulSet pod to present the Secret's new
+    # node.crt in a live TLS handshake. Pods may still be settling from the
+    # agent's restart, so poll to a bounded deadline.
     if new_fp:
-        deadline = time.monotonic() + 90
-        served_fp, served_err = served_leaf_fingerprint()
-        while served_fp != new_fp and time.monotonic() < deadline:
-            time.sleep(6)
-            served_fp, served_err = served_leaf_fingerprint()
-        if served_fp != new_fp:
-            if served_fp:
+        expected_replicas, replica_error = statefulset_replicas()
+        if replica_error:
+            errors.append(f"Unable to determine target cluster size: {replica_error}")
+        else:
+            deadline = time.monotonic() + 90
+            pending_pods = {}
+            discovery_error = ""
+            while time.monotonic() < deadline:
+                pod_names, pod_error = target_pod_names()
+                if pod_error:
+                    discovery_error = pod_error
+                    pending_pods = {}
+                elif len(pod_names) != expected_replicas:
+                    discovery_error = (
+                        f"Expected {expected_replicas} pods for {CLUSTER_NAME}, "
+                        f"found {len(pod_names)}"
+                    )
+                    pending_pods = {}
+                else:
+                    discovery_error = ""
+                    pending_pods = {}
+                    for node_name in pod_names:
+                        served_fp, served_err = served_leaf_fingerprint(node_name)
+                        if served_fp != new_fp:
+                            pending_pods[node_name] = (
+                                served_err
+                                or (
+                                    f"served fingerprint {served_fp[:16]}... does not match "
+                                    f"Secret fingerprint {new_fp[:16]}..."
+                                )
+                            )
+                    if not pending_pods:
+                        break
+                time.sleep(6)
+
+            if discovery_error:
+                errors.append(f"Unable to inspect every target cluster pod: {discovery_error}")
+            for node_name, reason in sorted(pending_pods.items()):
                 errors.append(
-                    "Served certificate does not match rotated node.crt "
-                    f"(served {served_fp[:16]}..., secret {new_fp[:16]}...)"
+                    f"Node {node_name} is not serving the rotated certificate: {reason}"
                 )
-            else:
-                errors.append(f"Unable to read served certificate: {served_err}")
 
     new_na_cmd = [
         "/bin/sh",
         "-c",
-        f"kubectl -n cockroachdb get secret {CERT_SECRET} "
+        f"kubectl -n {NAMESPACE} get secret {CERT_SECRET} "
         "-o jsonpath='{.data.node\\.crt}' | base64 -d | "
         "openssl x509 -noout -enddate",
     ]
     ca_old_cmd = [
         "kubectl",
         "-n",
-        "cockroachdb",
+        NAMESPACE,
         "get",
         "configmap",
         OLD_CERT_CM,
@@ -182,7 +322,7 @@ def main():
     ca_new_cmd = [
         "/bin/sh",
         "-c",
-        f"kubectl -n cockroachdb get secret {CERT_SECRET} "
+        f"kubectl -n {NAMESPACE} get secret {CERT_SECRET} "
         "-o jsonpath='{.data.ca\\.crt}' | base64 -d | "
         "openssl x509 -noout -fingerprint -sha256",
     ]
@@ -204,17 +344,18 @@ def main():
             raw = raw[:-4]
         try:
             new_not_after = datetime.strptime(raw, "%b %d %H:%M:%S %Y").replace(tzinfo=timezone.utc)
-            # "about 1 year" per the prompt: require the NEW cert valid for at
-            # least ~10 months FROM NOW (absolute), NOT merely outliving the OLD
-            # cert. Standalone the old leaf is deliberately 2 days (gen-old-certs.sh)
-            # so a relative check happened to work; but when this case is chained
-            # after a stage that installed multi-year certs (e.g. generate-cert),
-            # the inherited old cert is long-lived, so "new must outlive old by
-            # 300d" wrongly failed a correct ~1-year rotation. The forward-looking
-            # floor still rejects a too-short cert in both standalone and composed.
-            days_from_now = (new_not_after - datetime.now(timezone.utc)).days
-            if days_from_now < 300:
-                errors.append(f"New certificate validity too short ({days_from_now} days from now)")
+            # "About 1 year" means a 300-400 day window from now, not just a
+            # minimum lifetime. An absolute window avoids depending on the old
+            # certificate's expiration when this case is composed in a workflow.
+            remaining = new_not_after - datetime.now(timezone.utc)
+            if remaining < timedelta(days=300):
+                errors.append(
+                    f"New certificate validity too short ({remaining.days} days from now)"
+                )
+            elif remaining > timedelta(days=400):
+                errors.append(
+                    f"New certificate validity too long ({remaining.days} days from now)"
+                )
         except ValueError:
             errors.append(f"Unable to parse new not_after: {new_na_result.stdout.strip()}")
 

@@ -7,6 +7,12 @@ metadata:
   label: 'CockroachDB security lifecycle: TLS enable then cert rotation'
 spec:
   prompt_mode: progressive
+  # Used only with `run-workflow ... --debug`; regular runs still get isolated
+  # Karma-managed namespaces. Here the rotation case's default role must point
+  # at the literal namespace used by the preceding CockroachDB cases.
+  debug:
+    namespace_overrides:
+      default: cockroachdb
   stages:
   - id: stage_01
     service: cockroachdb

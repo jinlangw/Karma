@@ -47,16 +47,17 @@ spec:
       gc_ttl_seconds: 14400
   - id: stage_08
     service: cockroachdb
-    case: partitioned-update
+    case: major-upgrade-finalize
     retries: 0
     param_overrides:
+      from_version: '23.2.0'
       to_version: 23.2.7
   - id: stage_09
     service: cockroachdb
     case: major-upgrade-finalize
     retries: 0
-    # Pin to 24.1.1 to match stage_08's partitioned-update; otherwise this stage
-    # defaults to 24.1.0 and DOWNGRADES below the upgrade target (C10).
+    # Keep this major upgrade's configured 24.1.1 target; the downstream
+    # version check references this stage's target directly (C10).
     param_overrides:
       to_version: 24.1.1
   - id: stage_10

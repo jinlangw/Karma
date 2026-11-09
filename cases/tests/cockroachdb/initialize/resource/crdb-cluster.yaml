@@ -1,8 +1,8 @@
 apiVersion: crdb.cockroachlabs.com/v1alpha1
 kind: CrdbCluster
 metadata:
-  name: crdb-cluster
-  namespace: cockroachdb
+  name: ${BENCH_PARAM_CLUSTER_NAME}
+  namespace: ${BENCH_NAMESPACE}
   annotations:
     crdb.cockroachlabs.com/initialize: "required"
 spec:
