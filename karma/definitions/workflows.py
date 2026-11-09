@@ -69,6 +69,28 @@ class _StageSpec(BaseModel):
     retries: int = 0
 
 
+class _WorkflowDebugSpec(BaseModel):
+    """Opt-in settings used only when a workflow is launched with ``--debug``."""
+
+    namespace_overrides: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_namespace_overrides(self) -> "_WorkflowDebugSpec":
+        namespace_pattern = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
+        for role, namespace in self.namespace_overrides.items():
+            if not _is_valid_name(role):
+                raise ValueError(
+                    f"debug namespace override role {role!r} is invalid; "
+                    "use letters, digits, '-' or '_'"
+                )
+            if len(namespace) > 63 or not namespace_pattern.fullmatch(namespace):
+                raise ValueError(
+                    f"debug namespace override for role {role!r} has invalid "
+                    f"Kubernetes namespace name {namespace!r}"
+                )
+        return self
+
+
 class _WorkflowMetadata(BaseModel):
     """The metadata block at the top of a workflow YAML."""
 
@@ -93,6 +115,9 @@ class _WorkflowSpec(BaseModel):
     # must NOT describe the submit mechanism (the wrapper handles that).
     system_prompt: str | None = None
     adversary: list[Any] = []
+    # These physical namespace bindings are inert unless the CLI is invoked
+    # with --debug. Ordinary workflow runs always use generated namespaces.
+    debug: _WorkflowDebugSpec = Field(default_factory=_WorkflowDebugSpec)
 
     @model_validator(mode="after")
     def _progressive_requires_persistent(self) -> "_WorkflowSpec":
@@ -313,7 +338,7 @@ def normalize_workflow(
         Keys: ``id`` (str), ``label`` (str or ``None``),
         ``prompt_mode`` (str), ``agent_session`` (str),
         ``system_prompt`` (str or ``None``), ``stages`` (list[dict]),
-        ``adversary`` (list[dict]).
+        ``adversary`` (list[dict]), and ``debug`` (dict).
     """
     try:
         WorkflowSchema.model_validate(raw)
@@ -386,6 +411,11 @@ def normalize_workflow(
         "system_prompt": (str(spec.get("system_prompt") or "").strip() or None),
         "stages": normalized_stages,
         "adversary": list(spec.get("adversary") or []),
+        "debug": {
+            "namespace_overrides": dict(
+                (spec.get("debug") or {}).get("namespace_overrides") or {}
+            ),
+        },
     }
 
 
