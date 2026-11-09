@@ -116,6 +116,24 @@ List the available agents:
 python3 orchestrator.py info --agents
 ```
 
+For a local debug run that should reuse a specific namespace, a workflow can
+declare a debug-only alias mapping:
+
+```yaml
+spec:
+  debug:
+    namespace_overrides:
+      default: karma-debug
+```
+
+Activate it with `python3 orchestrator.py run-workflow <workflow.yaml> --debug`.
+The mapping key is a workflow namespace alias (for example, `default`), and the
+value is the Kubernetes namespace name. Without `--debug`, KARMA continues to
+use its normal per-run namespaces. KARMA leaves creation, labeling, and cleanup
+of the debug namespace to you. Case setup and reset commands still run and may
+change or recreate resources in that namespace. Use a namespace intended for
+testing.
+
 ### Run the tests
 
 ```bash

@@ -92,6 +92,7 @@ def run_workflow(
     agent_session: str | None = None,
     system_prompt: str | None = None,
     prompt_mode_prologues: str | None = None,
+    namespace_overrides: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Execute a workflow synchronously and return the final run result.
 
@@ -114,6 +115,9 @@ def run_workflow(
         Provider name passed to ``environments.registry.get_environment``.
     environment_config:
         Provider-specific config dict.
+    namespace_overrides:
+        Optional debug-only mapping from workflow namespace identities to
+        explicit physical Kubernetes namespaces.
     on_stage_complete:
         Optional callable invoked with the stage result dict after each
         stage. Used by the HTTP SSE path to stream progress.
@@ -157,6 +161,8 @@ def run_workflow(
         cfg["max_attempts"] = max_attempts
         cfg["stage_failure_mode"] = stage_failure_mode
         cfg["final_sweep_mode"] = final_sweep_mode
+        if namespace_overrides:
+            cfg["debug_namespace_overrides"] = dict(namespace_overrides)
         cfg["stages"] = [
             {
                 "id": s.get("id"),
@@ -185,6 +191,22 @@ def run_workflow(
 
     try:
         rows = resolve_workflow_rows(workflow, resources_dir=resources_dir)
+        active_namespace_overrides = namespace_overrides or {}
+        known_namespace_roles = {
+            str(role)
+            for row in rows
+            for role in (
+                row.get("namespace_roles")
+                if row.get("namespace_roles") is not None
+                else ["default"]
+            )
+        }
+        unknown_override_roles = sorted(set(active_namespace_overrides) - known_namespace_roles)
+        if unknown_override_roles:
+            raise ValueError(
+                "debug namespace override references unknown workflow namespace "
+                f"role(s): {', '.join(unknown_override_roles)}"
+            )
         env = get_environment(environment_provider, config=environment_config)
         agent_meta = resolve_agent(agent_name, sandbox_mode=sandbox_mode)
         # Docker image provisioning: override the tag and/or build the image on
@@ -257,6 +279,7 @@ def run_workflow(
             stage_failure_mode=stage_failure_mode,
             final_sweep_mode=final_sweep_mode,
             sandbox_options=sandbox_options,
+            namespace_overrides=active_namespace_overrides,
         )
         result["summary"] = {
             "total_stages": len(rows),

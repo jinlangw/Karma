@@ -180,6 +180,8 @@ def _build_parser() -> argparse.ArgumentParser:
     wf.add_argument("--profile", default=None)
     wf.add_argument("--dry-run", action="store_true",
                     help="Resolve rows and print without running.")
+    wf.add_argument("--debug", action="store_true",
+                    help="Use spec.debug settings, including any explicit namespace overrides.")
     wf.add_argument("--judge", action="store_true",
                     help="Run the LLM judge on every stage after the run completes.")
     wf.add_argument("--max-attempts", type=int, default=None,
@@ -466,6 +468,16 @@ def _cmd_run_workflow(args: argparse.Namespace) -> None:
 
     raw = load_workflow_file(Path(args.workflow))
     workflow = normalize_workflow(raw, resources_dir=resources_dir)
+    debug_namespace_overrides = None
+    if args.debug:
+        debug_namespace_overrides = (
+            workflow.get("debug", {}).get("namespace_overrides") or {}
+        )
+        if not debug_namespace_overrides:
+            raise ValueError(
+                "--debug was specified, but this workflow has no "
+                "spec.debug.namespace_overrides"
+            )
 
     if args.dry_run:
         print(json.dumps(workflow, indent=2, default=str))
@@ -490,6 +502,7 @@ def _cmd_run_workflow(args: argparse.Namespace) -> None:
         agent_session=args.agent_session,
         system_prompt=_read_system_prompt_arg(args),
         prompt_mode_prologues=getattr(args, "prompt_mode_prologues", None),
+        namespace_overrides=debug_namespace_overrides,
     )
     _print_result(result, args.output)
     if getattr(args, "judge", False):
